@@ -22,8 +22,9 @@ deploy: build-linux
 	@echo "Deploying to workers..."
 	@for i in $$(seq 0 $$(($${WORKER_COUNT:-3} - 1))); do \
 		echo "  -> krowl-worker-$$i"; \
+		ssh krowl-worker-$$i "systemctl stop crawler || true"; \
 		scp $(BUILD_DIR)/$(BINARY)-linux-amd64 krowl-worker-$$i:/usr/local/bin/crawler; \
-		ssh krowl-worker-$$i "systemctl restart crawler || true"; \
+		ssh krowl-worker-$$i "chmod +x /usr/local/bin/crawler && systemctl start crawler"; \
 	done
 
 # Deploy seeds file
