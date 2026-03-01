@@ -128,23 +128,8 @@ done
 mkdir -p /mnt/jfs/warcs /mnt/jfs/seeds
 
 # --- Register services in Consul ---
-cat >/etc/consul.d/crawler.hcl <<EOF
-services {
-  name = "crawler"
-  port = 9090
-  tags = ["worker", "metrics"]
-  meta {
-    node_id    = "${node_id}"
-    redis_addr = "{{ GetPrivateInterfaces | include \"network\" \"10.100.0.0/16\" | attr \"address\" }}:6379"
-  }
-  check {
-    http     = "http://localhost:9090/health"
-    interval = "5s"
-    timeout  = "2s"
-    deregister_critical_service_after = "30s"
-  }
-}
-
+# Crawler service is self-registered by the binary on startup
+cat >/etc/consul.d/worker.hcl <<EOF
 services {
   name = "redis"
   port = 6379

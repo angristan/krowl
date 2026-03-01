@@ -192,6 +192,10 @@ func main() {
 
 	// Distributed-only goroutines
 	if !*standalone {
+		// Register this crawler in Consul (now that /health is serving)
+		serviceID := registerConsulService(consulClient, *nodeID, *metricsPort)
+		defer deregisterConsulService(consulClient, serviceID)
+
 		go watchTopology(ctx, consulClient, hashRing, sender, *nodeID)
 		go reportMetrics(ctx, dm, fr, hashRing, rdb)
 		wg.Add(1)
@@ -253,6 +257,41 @@ func main() {
 	}
 
 	slog.Info("krowl shutdown complete")
+}
+
+// registerConsulService registers this crawler in Consul with a health check.
+func registerConsulService(client *consul.Client, nodeID int, port int) string {
+	serviceID := fmt.Sprintf("crawler-%d", nodeID)
+	reg := &consul.AgentServiceRegistration{
+		ID:   serviceID,
+		Name: "crawler",
+		Port: port,
+		Tags: []string{"worker", "metrics"},
+		Meta: map[string]string{
+			"node_id": strconv.Itoa(nodeID),
+		},
+		Check: &consul.AgentServiceCheck{
+			HTTP:                           fmt.Sprintf("http://localhost:%d/health", port),
+			Interval:                       "5s",
+			Timeout:                        "2s",
+			DeregisterCriticalServiceAfter: "1m",
+		},
+	}
+	if err := client.Agent().ServiceRegister(reg); err != nil {
+		slog.Error("failed to register service in Consul", "error", err)
+	} else {
+		slog.Info("registered in Consul", "service_id", serviceID)
+	}
+	return serviceID
+}
+
+// deregisterConsulService removes this crawler from Consul.
+func deregisterConsulService(client *consul.Client, serviceID string) {
+	if err := client.Agent().ServiceDeregister(serviceID); err != nil {
+		slog.Error("failed to deregister service from Consul", "error", err)
+	} else {
+		slog.Info("deregistered from Consul", "service_id", serviceID)
+	}
 }
 
 // updateTopology rebuilds the hash ring from Consul's service catalog.

@@ -16,8 +16,23 @@ resource "digitalocean_firewall" "krowl" {
     digitalocean_droplet.worker[*].id,
   )
 
-  # Deny all inbound on public IP
-  # (no inbound rules = deny all)
+  # Allow all inbound from VPC (inter-node communication)
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "1-65535"
+    source_addresses = ["10.100.0.0/16"]
+  }
+
+  inbound_rule {
+    protocol         = "udp"
+    port_range       = "1-65535"
+    source_addresses = ["10.100.0.0/16"]
+  }
+
+  inbound_rule {
+    protocol         = "icmp"
+    source_addresses = ["10.100.0.0/16"]
+  }
 
   # Allow all outbound (crawling, package installs, Tailscale DERP)
   outbound_rule {
