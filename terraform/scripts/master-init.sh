@@ -79,9 +79,15 @@ curl -fsSL https://github.com/prometheus/prometheus/releases/download/v2.53.0/pr
 cp /tmp/prometheus-2.53.0.linux-amd64/{prometheus,promtool} /usr/local/bin/
 rm -rf /tmp/prometheus-*
 
+# Install alert rules
+echo "${prometheus_alerts_b64}" | base64 -d >/etc/prometheus/alerts.yml
+
 cat >/etc/prometheus/prometheus.yml <<'PROM'
 global:
   scrape_interval: 15s
+
+rule_files:
+  - alerts.yml
 
 scrape_configs:
   - job_name: 'prometheus'
