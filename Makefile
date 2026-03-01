@@ -19,12 +19,23 @@ clean:
 
 # Deploy binary to all workers via Tailscale
 deploy: build-linux
-	@echo "Deploying to workers..."
+	@echo "Stopping crawlers..."
+	@for i in $$(seq 0 $$(($${WORKER_COUNT:-3} - 1))); do \
+		ssh krowl-worker-$$i "systemctl stop crawler" & \
+	done; wait
+	@echo "Deploying binary..."
 	@for i in $$(seq 0 $$(($${WORKER_COUNT:-3} - 1))); do \
 		echo "  -> krowl-worker-$$i"; \
-		ssh krowl-worker-$$i "systemctl stop crawler || true"; \
 		scp $(BUILD_DIR)/$(BINARY)-linux-amd64 krowl-worker-$$i:/usr/local/bin/crawler; \
-		ssh krowl-worker-$$i "chmod +x /usr/local/bin/crawler && systemctl start crawler"; \
+		ssh krowl-worker-$$i "chmod +x /usr/local/bin/crawler"; \
+	done
+	@echo "Starting crawlers..."
+	@for i in $$(seq 0 $$(($${WORKER_COUNT:-3} - 1))); do \
+		ssh krowl-worker-$$i "systemctl start crawler"; \
+	done
+	@echo "Verifying..."
+	@sleep 2; for i in $$(seq 0 $$(($${WORKER_COUNT:-3} - 1))); do \
+		printf "  worker-$$i: "; ssh krowl-worker-$$i "systemctl is-active crawler"; \
 	done
 
 # Deploy seeds file

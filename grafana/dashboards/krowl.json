@@ -37,7 +37,7 @@
     {
       "type": "stat", "title": "Pages / sec", "id": 1,
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+      "gridPos": {"h": 4, "w": 3, "x": 0, "y": 1},
       "targets": [{"expr": "sum(rate(krowl_pages_fetched_total{instance=~\"$instance\"}[$__rate_interval]))", "refId": "A"}],
       "fieldConfig": {"defaults": {"unit": "reqps", "color": {"mode": "fixed", "fixedColor": "green"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
@@ -45,7 +45,7 @@
     {
       "type": "stat", "title": "URLs Discovered / sec", "id": 2,
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+      "gridPos": {"h": 4, "w": 3, "x": 3, "y": 1},
       "targets": [{"expr": "sum(rate(krowl_urls_discovered_total{instance=~\"$instance\"}[$__rate_interval]))", "refId": "A"}],
       "fieldConfig": {"defaults": {"unit": "ops", "color": {"mode": "fixed", "fixedColor": "blue"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
@@ -53,7 +53,7 @@
     {
       "type": "stat", "title": "Active Domains", "id": 3,
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
+      "gridPos": {"h": 4, "w": 3, "x": 6, "y": 1},
       "targets": [{"expr": "sum(krowl_active_domains{instance=~\"$instance\"})", "refId": "A"}],
       "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "purple"}, "thresholds": {"mode": "absolute", "steps": [{"color": "purple", "value": null}]}}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
@@ -61,7 +61,7 @@
     {
       "type": "stat", "title": "Frontier Size", "id": 4,
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
+      "gridPos": {"h": 4, "w": 3, "x": 9, "y": 1},
       "targets": [{"expr": "sum(krowl_frontier_size{instance=~\"$instance\"})", "refId": "A"}],
       "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "yellow"}, "thresholds": {"mode": "absolute", "steps": [{"color": "yellow", "value": null}]}}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "area"}
@@ -69,7 +69,7 @@
     {
       "type": "stat", "title": "Fetch Errors / sec", "id": 5,
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
+      "gridPos": {"h": 4, "w": 3, "x": 12, "y": 1},
       "targets": [{"expr": "sum(rate(krowl_fetch_errors_total{instance=~\"$instance\"}[$__rate_interval]))", "refId": "A"}],
       "fieldConfig": {"defaults": {"unit": "ops", "color": {"mode": "fixed", "fixedColor": "red"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 10}]}}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
@@ -77,10 +77,26 @@
     {
       "type": "stat", "title": "Cluster Nodes", "id": 6,
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
+      "gridPos": {"h": 4, "w": 3, "x": 15, "y": 1},
       "targets": [{"expr": "max(krowl_topology_nodes{instance=~\"$instance\"})", "refId": "A"}],
       "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "orange"}, "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}]}}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "stat", "title": "JuiceFS Disk Usage", "id": 7,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 3, "x": 18, "y": 1},
+      "targets": [{"expr": "max(juicefs_used_space)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "color": {"mode": "fixed", "fixedColor": "semi-dark-blue"}, "thresholds": {"mode": "absolute", "steps": [{"color": "semi-dark-blue", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
+    },
+    {
+      "type": "stat", "title": "WARC Written", "id": 8,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 3, "x": 21, "y": 1},
+      "targets": [{"expr": "sum(krowl_warc_bytes_written_total{instance=~\"$instance\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "color": {"mode": "fixed", "fixedColor": "dark-green"}, "thresholds": {"mode": "absolute", "steps": [{"color": "dark-green", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
     },
 
     {"type": "row", "title": "HTTP Fetch Latency", "collapsed": false, "id": 101, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}, "panels": []},
@@ -444,6 +460,194 @@
       "targets": [
         {"expr": "process_open_fds{instance=~\"$instance\"}", "legendFormat": "{{instance}} open", "refId": "A"},
         {"expr": "process_max_fds{instance=~\"$instance\"}", "legendFormat": "{{instance}} max", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "Network I/O", "collapsed": false, "id": 200, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 104}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Network Receive Rate", "id": 201,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 105},
+      "targets": [
+        {"expr": "rate(node_network_receive_bytes_total{device!=\"lo\"}[5m]) * 8", "legendFormat": "{{instance}} {{device}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bps", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Network Transmit Rate", "id": 202,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 105},
+      "targets": [
+        {"expr": "rate(node_network_transmit_bytes_total{device!=\"lo\"}[5m]) * 8", "legendFormat": "{{instance}} {{device}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bps", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "TCP Connections", "id": 203,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 105},
+      "targets": [
+        {"expr": "node_netstat_Tcp_CurrEstab", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "Disk I/O", "collapsed": false, "id": 210, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 113}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Disk Read Rate", "id": 211,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 114},
+      "targets": [
+        {"expr": "rate(node_disk_read_bytes_total[5m])", "legendFormat": "{{instance}} {{device}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Disk Write Rate", "id": 212,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 114},
+      "targets": [
+        {"expr": "rate(node_disk_written_bytes_total[5m])", "legendFormat": "{{instance}} {{device}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Disk Space Used %", "id": 213,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 114},
+      "targets": [
+        {"expr": "100 - (node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"} * 100)", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "JuiceFS", "collapsed": false, "id": 220, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 122}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "JuiceFS Object Storage Latency", "id": 221,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 123},
+      "targets": [
+        {"expr": "rate(juicefs_object_request_durations_histogram_seconds_sum[5m]) / rate(juicefs_object_request_durations_histogram_seconds_count[5m])", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "JuiceFS FUSE Read/Write Bytes", "id": 222,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 123},
+      "targets": [
+        {"expr": "rate(juicefs_fuse_read_size_bytes_sum[5m])", "legendFormat": "{{instance}} Read", "refId": "A"},
+        {"expr": "rate(juicefs_fuse_written_size_bytes_sum[5m])", "legendFormat": "{{instance}} Write", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "JuiceFS Disk Usage", "id": 224,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 123},
+      "targets": [
+        {"expr": "max(juicefs_used_space)", "legendFormat": "Used", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "custom": {"fillOpacity": 20, "gradientMode": "scheme"}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}}
+    },
+
+    {"type": "row", "title": "Pebble", "collapsed": false, "id": 230, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 131}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Pebble Disk Usage", "id": 231,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 132},
+      "targets": [
+        {"expr": "krowl_pebble_disk_usage_bytes{instance=~\"$instance\"}", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Pebble L0 Files / Sublevels", "id": 232,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 132},
+      "targets": [
+        {"expr": "krowl_pebble_l0_files{instance=~\"$instance\"}", "legendFormat": "L0 Files", "refId": "A"},
+        {"expr": "krowl_pebble_l0_sublevels{instance=~\"$instance\"}", "legendFormat": "L0 Sublevels", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Pebble Read Amplification", "id": 233,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 132},
+      "targets": [
+        {"expr": "krowl_pebble_read_amp{instance=~\"$instance\"}", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Pebble Compaction Debt", "id": 234,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 140},
+      "targets": [
+        {"expr": "krowl_pebble_compaction_debt_bytes{instance=~\"$instance\"}", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "Redis", "collapsed": false, "id": 240, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 148}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Redis Memory Usage", "id": 241,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 149},
+      "targets": [
+        {"expr": "redis_memory_used_bytes", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Redis Connected Clients", "id": 242,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 149},
+      "targets": [
+        {"expr": "redis_connected_clients", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Redis Ops/sec", "id": 243,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 149},
+      "targets": [
+        {"expr": "rate(redis_commands_processed_total[5m])", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Redis Pool Connections", "id": 244,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 149},
+      "targets": [
+        {"expr": "krowl_redis_pool_total_conns{instance=~\"$instance\"}", "legendFormat": "Total", "refId": "A"},
+        {"expr": "krowl_redis_pool_idle_conns{instance=~\"$instance\"}", "legendFormat": "Idle", "refId": "B"}
       ],
       "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
       "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}

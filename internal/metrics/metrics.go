@@ -258,6 +258,72 @@ var (
 	})
 )
 
+// ---- Pebble internals ----
+
+var (
+	PebbleDiskUsageBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "pebble_disk_usage_bytes",
+		Help: "Pebble on-disk space used",
+	})
+	PebbleMemtableSizeBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "pebble_memtable_size_bytes",
+		Help: "Pebble memtable size",
+	})
+	PebbleMemtableCount = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "pebble_memtable_count",
+		Help: "Pebble memtable count",
+	})
+	PebbleCompactionDebtBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "pebble_compaction_debt_bytes",
+		Help: "Pebble estimated compaction debt",
+	})
+	PebbleL0Files = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "pebble_l0_files",
+		Help: "Pebble L0 file count",
+	})
+	PebbleL0Sublevels = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "pebble_l0_sublevels",
+		Help: "Pebble L0 sublevel count",
+	})
+	PebbleReadAmp = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "pebble_read_amp",
+		Help: "Pebble read amplification",
+	})
+	PebbleTotalKeys = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "pebble_total_keys",
+		Help: "Pebble estimated total keys",
+	})
+)
+
+// ---- Redis pool ----
+
+var (
+	RedisPoolHits = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "redis_pool_hits_total",
+		Help: "Redis connection pool hits (cumulative)",
+	})
+	RedisPoolMisses = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "redis_pool_misses_total",
+		Help: "Redis connection pool misses (cumulative)",
+	})
+	RedisPoolTimeouts = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "redis_pool_timeouts_total",
+		Help: "Redis connection pool timeouts (cumulative)",
+	})
+	RedisPoolTotalConns = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "redis_pool_total_conns",
+		Help: "Redis total connections in pool",
+	})
+	RedisPoolIdleConns = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "redis_pool_idle_conns",
+		Help: "Redis idle connections in pool",
+	})
+	RedisPoolStaleConns = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "redis_pool_stale_conns_total",
+		Help: "Redis stale connections removed from pool (cumulative)",
+	})
+)
+
 // ---- Frontier / crawl status ----
 
 var (
@@ -318,6 +384,19 @@ func Register() {
 	prometheus.MustRegister(
 		InboxForwardedTotal, InboxForwardErrors, InboxReceivedTotal,
 		InboxBatchSize, InboxQueueSize,
+	)
+
+	// Pebble
+	prometheus.MustRegister(
+		PebbleDiskUsageBytes, PebbleMemtableSizeBytes, PebbleMemtableCount,
+		PebbleCompactionDebtBytes, PebbleL0Files, PebbleL0Sublevels,
+		PebbleReadAmp, PebbleTotalKeys,
+	)
+
+	// Redis pool
+	prometheus.MustRegister(
+		RedisPoolHits, RedisPoolMisses, RedisPoolTimeouts,
+		RedisPoolTotalConns, RedisPoolIdleConns, RedisPoolStaleConns,
 	)
 
 	// Frontier / crawl

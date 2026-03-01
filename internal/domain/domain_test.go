@@ -9,7 +9,7 @@ import (
 )
 
 func TestNewManager(t *testing.T) {
-	m := NewManager("testbot/1.0")
+	m := NewManager("testbot/1.0", 0)
 	if m == nil {
 		t.Fatal("NewManager returned nil")
 	}
@@ -28,7 +28,7 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestEnqueueDequeue_FIFO(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 	m.Enqueue("example.com", "https://example.com/a", 0)
 	m.Enqueue("example.com", "https://example.com/b", 1)
 	m.Enqueue("example.com", "https://example.com/c", 2)
@@ -48,7 +48,7 @@ func TestEnqueueDequeue_FIFO(t *testing.T) {
 }
 
 func TestDequeue_EmptyQueue(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	// Dequeue from non-existent domain
 	_, ok := m.Dequeue("noexist.com")
@@ -66,7 +66,7 @@ func TestDequeue_EmptyQueue(t *testing.T) {
 }
 
 func TestQueueLen(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	if m.QueueLen("example.com") != 0 {
 		t.Fatal("expected 0 for unknown domain")
@@ -87,7 +87,7 @@ func TestQueueLen(t *testing.T) {
 }
 
 func TestGetOrCreate_Defaults(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	s := m.GetOrCreate("example.com")
 	if s == nil {
@@ -118,7 +118,7 @@ func TestGetOrCreate_Defaults(t *testing.T) {
 }
 
 func TestCanFetch_NewDomain(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	allowed, wait := m.CanFetch("newdomain.com")
 	if !allowed {
@@ -130,7 +130,7 @@ func TestCanFetch_NewDomain(t *testing.T) {
 }
 
 func TestRecordFetch_UpdatesLatencyAndDelay(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	// First fetch: AvgLatency should equal the latency
 	m.RecordFetch("example.com", 200*time.Millisecond)
@@ -167,7 +167,7 @@ func TestRecordFetch_UpdatesLatencyAndDelay(t *testing.T) {
 }
 
 func TestRecordFetch_ClampsToMinDelay(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	// Very fast response: 10ms * 5 = 50ms, should be clamped to MinCrawlDelay
 	m.RecordFetch("fast.com", 10*time.Millisecond)
@@ -178,7 +178,7 @@ func TestRecordFetch_ClampsToMinDelay(t *testing.T) {
 }
 
 func TestRecordFetch_ClampsToMaxDelay(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	// Very slow response: 10s * 5 = 50s, should be clamped to MaxCrawlDelay
 	m.RecordFetch("slow.com", 10*time.Second)
@@ -189,7 +189,7 @@ func TestRecordFetch_ClampsToMaxDelay(t *testing.T) {
 }
 
 func TestRecordError_ExponentialBackoff(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	// Errors below threshold: no backoff
 	for i := 0; i < MaxConsecutiveErrs-1; i++ {
@@ -225,7 +225,7 @@ func TestRecordError_ExponentialBackoff(t *testing.T) {
 }
 
 func TestRecordError_ResetsOnFetch(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	// Accumulate errors
 	for i := 0; i < MaxConsecutiveErrs+2; i++ {
@@ -244,7 +244,7 @@ func TestRecordError_ResetsOnFetch(t *testing.T) {
 }
 
 func TestCanFetch_RespectsBackoff(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	// Put domain into backoff
 	for i := 0; i < MaxConsecutiveErrs+1; i++ {
@@ -261,7 +261,7 @@ func TestCanFetch_RespectsBackoff(t *testing.T) {
 }
 
 func TestCanFetch_RespectsRateLimit(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	// Record a fetch (sets LastFetch to now and CrawlDelay adaptively)
 	m.RecordFetch("rate.com", 200*time.Millisecond)
@@ -277,7 +277,7 @@ func TestCanFetch_RespectsRateLimit(t *testing.T) {
 }
 
 func TestActiveDomains(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	m.Enqueue("a.com", "https://a.com/1", 0)
 	m.Enqueue("b.com", "https://b.com/1", 0)
@@ -302,7 +302,7 @@ func TestActiveDomains(t *testing.T) {
 }
 
 func TestTotalQueueLen(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	if m.TotalQueueLen() != 0 {
 		t.Fatal("expected 0 total queue len initially")
@@ -323,7 +323,7 @@ func TestTotalQueueLen(t *testing.T) {
 }
 
 func TestDomainCount(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	if m.DomainCount() != 0 {
 		t.Fatal("expected 0 domains initially")
@@ -376,7 +376,7 @@ func TestExtractDomain(t *testing.T) {
 }
 
 func TestSetFrontier_EnqueuePushesToFrontier(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 	f := frontier.New()
 	m.SetFrontier(f)
 
@@ -394,7 +394,7 @@ func TestSetFrontier_EnqueuePushesToFrontier(t *testing.T) {
 }
 
 func TestSetFrontier_SecondEnqueueDoesNotDuplicate(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 	f := frontier.New()
 	m.SetFrontier(f)
 
@@ -408,7 +408,7 @@ func TestSetFrontier_SecondEnqueueDoesNotDuplicate(t *testing.T) {
 }
 
 func TestSetFrontier_MultipleDomains(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 	f := frontier.New()
 	m.SetFrontier(f)
 
@@ -424,7 +424,7 @@ func TestSetFrontier_MultipleDomains(t *testing.T) {
 }
 
 func TestNextFetchTime_NewDomain(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	before := time.Now()
 	next := m.NextFetchTime("new.com")
@@ -436,7 +436,7 @@ func TestNextFetchTime_NewDomain(t *testing.T) {
 }
 
 func TestNextFetchTime_AfterFetch(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	m.RecordFetch("example.com", 200*time.Millisecond)
 	s := m.GetOrCreate("example.com")
@@ -452,7 +452,7 @@ func TestNextFetchTime_AfterFetch(t *testing.T) {
 }
 
 func TestNextFetchTime_DuringBackoff(t *testing.T) {
-	m := NewManager("bot")
+	m := NewManager("bot", 0)
 
 	// Put domain in backoff
 	for i := 0; i < MaxConsecutiveErrs+1; i++ {

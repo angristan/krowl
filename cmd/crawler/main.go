@@ -51,6 +51,10 @@ func main() {
 		warcDir        = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
 		checkpointPath = flag.String("checkpoint", "/var/data/frontier.ckpt", "Path for frontier checkpoint file")
 		checkpointSec  = flag.Int("checkpoint-interval", 30, "Seconds between periodic frontier checkpoints (0 to disable)")
+		fetchWorkersF  = flag.Int("fetch-workers", 100, "Number of fetcher goroutines (I/O-bound, set high)")
+		parseWorkersF  = flag.Int("parse-workers", 0, "Number of parser goroutines (0 = NumCPU)")
+		maxFrontier    = flag.Int("max-frontier", domain.DefaultMaxFrontier, "Global cap on total queued URLs (backpressure)")
+		logLevel       = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	)
 	flag.Parse()
 
@@ -59,8 +63,19 @@ func main() {
 		mode = "standalone"
 	}
 	// Configure structured logging
+	var level slog.Level
+	switch strings.ToLower(*logLevel) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	})))
 	slog.Info("krowl starting", "mode", mode, "node", *nodeID, "seeds", *seedFile)
 
@@ -87,7 +102,7 @@ func main() {
 	defer dd.Close()
 
 	// Domain manager
-	dm := domain.NewManager(userAgent)
+	dm := domain.NewManager(userAgent, *maxFrontier)
 
 	// Frontier priority heap (replaces O(n) domain scan with O(log n) heap)
 	fr := frontier.New()
@@ -164,8 +179,11 @@ func main() {
 
 	// --- Worker sizing ---
 	cpus := runtime.NumCPU()
-	fetchWorkers := max(1, cpus/4)
-	parseWorkers := cpus - fetchWorkers
+	fetchWorkers := *fetchWorkersF
+	parseWorkers := *parseWorkersF
+	if parseWorkers == 0 {
+		parseWorkers = cpus
+	}
 	slog.Info("worker pool configured", "fetch_workers", fetchWorkers, "parse_workers", parseWorkers, "cpus", cpus)
 
 	// Channels
@@ -197,14 +215,14 @@ func main() {
 		defer deregisterConsulService(consulClient, serviceID)
 
 		go watchTopology(ctx, consulClient, hashRing, sender, *nodeID)
-		go reportMetrics(ctx, dm, fr, hashRing, rdb)
+		go reportMetrics(ctx, dm, fr, hashRing, rdb, dd)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			consumer.Run(ctx)
 		}()
 	} else {
-		go reportMetrics(ctx, dm, fr, hashRing, nil)
+		go reportMetrics(ctx, dm, fr, hashRing, nil, dd)
 	}
 
 	// WARC writer goroutine
@@ -433,7 +451,7 @@ func periodicCheckpoint(ctx context.Context, dm *domain.Manager, path string, in
 }
 
 // reportMetrics periodically updates gauge metrics that need polling.
-func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontier, hashRing *ring.Ring, rdb *redis.Client) {
+func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontier, hashRing *ring.Ring, rdb *redis.Client, dd *dedup.Dedup) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -450,7 +468,30 @@ func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontie
 			if rdb != nil {
 				inboxLen, _ := rdb.LLen(ctx, "inbox").Result()
 				m.InboxQueueSize.Set(float64(inboxLen))
+
+				ps := rdb.PoolStats()
+				m.RedisPoolHits.Set(float64(ps.Hits))
+				m.RedisPoolMisses.Set(float64(ps.Misses))
+				m.RedisPoolTimeouts.Set(float64(ps.Timeouts))
+				m.RedisPoolTotalConns.Set(float64(ps.TotalConns))
+				m.RedisPoolIdleConns.Set(float64(ps.IdleConns))
+				m.RedisPoolStaleConns.Set(float64(ps.StaleConns))
 			}
+
+			// Pebble internals
+			pm := dd.Metrics()
+			m.PebbleDiskUsageBytes.Set(float64(pm.DiskSpaceUsage()))
+			m.PebbleMemtableSizeBytes.Set(float64(pm.MemTable.Size))
+			m.PebbleMemtableCount.Set(float64(pm.MemTable.Count))
+			m.PebbleCompactionDebtBytes.Set(float64(pm.Compact.EstimatedDebt))
+			m.PebbleL0Files.Set(float64(pm.Levels[0].NumFiles))
+			m.PebbleL0Sublevels.Set(float64(pm.Levels[0].Sublevels))
+			m.PebbleReadAmp.Set(float64(pm.ReadAmp()))
+			var totalKeys int64
+			for _, lm := range pm.Levels {
+				totalKeys += int64(lm.NumFiles)
+			}
+			m.PebbleTotalKeys.Set(float64(totalKeys))
 		}
 	}
 }

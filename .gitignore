@@ -1,5 +1,6 @@
 bin/
 krowl
+crawler
 *.tfstate
 *.tfstate.backup
 .terraform/
