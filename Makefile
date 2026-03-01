@@ -5,11 +5,11 @@ BUILD_DIR := bin
 
 # Build for local OS
 build:
-	CGO_ENABLED=0 go build -o $(BUILD_DIR)/$(BINARY) ./cmd/crawler/
+	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/crawler/
 
 # Build for Linux (deployment target)
 build-linux:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o $(BUILD_DIR)/$(BINARY)-linux-amd64 ./cmd/crawler/
+	GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY)-linux-amd64 ./cmd/crawler/
 
 test:
 	go test ./...
