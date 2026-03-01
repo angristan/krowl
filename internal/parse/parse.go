@@ -5,7 +5,8 @@ package parse
 
 import (
 	"context"
-	"log"
+	"hash/fnv"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -16,18 +17,47 @@ import (
 	"github.com/stanislas/krowl/internal/domain"
 	"github.com/stanislas/krowl/internal/fetch"
 	"github.com/stanislas/krowl/internal/inbox"
+	m "github.com/stanislas/krowl/internal/metrics"
 	"github.com/stanislas/krowl/internal/ring"
+	"github.com/stanislas/krowl/internal/urlnorm"
 )
+
+// soft404Threshold: if the same body hash appears this many times on a
+// domain, we stop extracting links from it (likely a soft-404 template).
+const soft404Threshold = 3
 
 // Pool manages a pool of parser goroutines.
 type Pool struct {
-	results <-chan fetch.Result
-	dedup   *dedup.Dedup
-	domains *domain.Manager
-	sender  *inbox.Sender
-	ring    *ring.Ring
-	myID    int
-	workers int
+	results      <-chan fetch.Result
+	dedup        *dedup.Dedup
+	domains      *domain.Manager
+	sender       *inbox.Sender
+	ring         *ring.Ring
+	myID         int
+	workers      int
+	contentDedup contentTracker
+}
+
+// contentTracker tracks per-domain body hashes for soft-404 detection.
+type contentTracker struct {
+	mu     sync.Mutex
+	counts map[domainHash]int // (domain, body_hash) -> count
+}
+
+type domainHash struct {
+	domain string
+	hash   uint64
+}
+
+func (ct *contentTracker) isDuplicate(domain string, body []byte) bool {
+	h := fnv.New64a()
+	h.Write(body)
+	key := domainHash{domain: domain, hash: h.Sum64()}
+
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	ct.counts[key]++
+	return ct.counts[key] >= soft404Threshold
 }
 
 // NewPool creates a parser pool.
@@ -48,6 +78,9 @@ func NewPool(
 		ring:    r,
 		myID:    myID,
 		workers: workers,
+		contentDedup: contentTracker{
+			counts: make(map[domainHash]int),
+		},
 	}
 }
 
@@ -79,13 +112,23 @@ func (p *Pool) parseLoop(ctx context.Context, id int) {
 }
 
 func (p *Pool) processResult(ctx context.Context, result fetch.Result) {
+	// Content hash dedup: skip link extraction for repeated soft-404 bodies
+	if p.contentDedup.isDuplicate(result.Domain, result.Body) {
+		m.ContentDedupSkipped.Inc()
+		slog.Debug("skipping duplicate content body",
+			"url", result.URL, "domain", result.Domain)
+		return
+	}
+
 	links := extractLinks(result.Body, result.URL)
 
+	deduped := 0
 	forwarded := 0
 	enqueued := 0
 
 	for _, link := range links {
 		if !p.dedup.IsNew(link) {
+			deduped++
 			continue
 		}
 
@@ -104,8 +147,20 @@ func (p *Pool) processResult(ctx context.Context, result fetch.Result) {
 		}
 	}
 
-	log.Printf("[parser] %s: %d links found, %d enqueued, %d forwarded",
-		result.URL, len(links), enqueued, forwarded)
+	// Report metrics
+	m.URLsDiscovered.Add(float64(len(links)))
+	m.LinksPerPage.Observe(float64(len(links)))
+	m.URLsDeduped.Add(float64(deduped))
+	m.URLsForwarded.Add(float64(forwarded))
+	m.URLsEnqueued.Add(float64(enqueued))
+
+	slog.Debug("page parsed",
+		"url", result.URL,
+		"links", len(links),
+		"deduped", deduped,
+		"enqueued", enqueued,
+		"forwarded", forwarded,
+	)
 }
 
 // extractLinks parses HTML and returns all absolute http/https URLs
@@ -150,8 +205,9 @@ func extractLinks(body []byte, baseURL string) []string {
 	}
 }
 
-// resolveLink resolves a potentially relative href against the base URL.
-// Returns empty string for non-http(s) URLs.
+// resolveLink resolves a potentially relative href against the base URL,
+// then normalizes aggressively (strip tracking params, sort query, strip
+// www, etc). Returns empty string for non-http(s) URLs.
 func resolveLink(base *url.URL, href string) string {
 	href = strings.TrimSpace(href)
 	if href == "" || strings.HasPrefix(href, "#") || strings.HasPrefix(href, "javascript:") ||
@@ -165,13 +221,9 @@ func resolveLink(base *url.URL, href string) string {
 	}
 
 	resolved := base.ResolveReference(u)
-	resolved.Fragment = "" // strip fragment
-
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
 		return ""
 	}
 
-	// Normalize
-	resolved.Host = strings.ToLower(resolved.Host)
-	return resolved.String()
+	return urlnorm.Normalize(resolved.String())
 }

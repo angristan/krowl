@@ -5,25 +5,27 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	consul "github.com/hashicorp/consul/api"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/stanislas/krowl/internal/dedup"
 	"github.com/stanislas/krowl/internal/domain"
 	"github.com/stanislas/krowl/internal/fetch"
+	"github.com/stanislas/krowl/internal/frontier"
 	"github.com/stanislas/krowl/internal/inbox"
+	m "github.com/stanislas/krowl/internal/metrics"
 	"github.com/stanislas/krowl/internal/parse"
 	"github.com/stanislas/krowl/internal/ring"
 	warcwriter "github.com/stanislas/krowl/internal/warc"
@@ -31,45 +33,13 @@ import (
 
 const userAgent = "krowl/1.0 (+https://github.com/stanislas/krowl; crawl@stanislas.blog)"
 
-// Prometheus metrics
-var (
-	pagesFetched = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "krowl_pages_fetched_total",
-		Help: "Total number of pages fetched",
-	})
-	urlsDiscovered = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "krowl_urls_discovered_total",
-		Help: "Total number of URLs discovered by parser",
-	})
-	urlsDeduped = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "krowl_urls_deduped_total",
-		Help: "Total number of URLs rejected by dedup",
-	})
-	urlsForwarded = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "krowl_urls_forwarded_total",
-		Help: "Total number of URLs forwarded to other nodes",
-	})
-	inboxSize = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "krowl_inbox_size",
-		Help: "Current number of URLs in the inbox",
-	})
-	frontierSize = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "krowl_frontier_size",
-		Help: "Total URLs across all domain frontiers",
-	})
-	activeDomains = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "krowl_active_domains",
-		Help: "Number of domains with URLs in frontier",
-	})
-)
-
 func init() {
-	prometheus.MustRegister(pagesFetched, urlsDiscovered, urlsDeduped,
-		urlsForwarded, inboxSize, frontierSize, activeDomains)
+	m.Register()
 }
 
 func main() {
 	var (
+		standalone   = flag.Bool("standalone", false, "Single-node mode: skip Consul and Redis")
 		nodeID       = flag.Int("node-id", 0, "This node's ID")
 		seedFile     = flag.String("seeds", "/mnt/jfs/seeds/top10k.txt", "Path to seed domains file")
 		pebblePath   = flag.String("pebble", "/var/data/pebble", "Path to Pebble database")
@@ -81,7 +51,15 @@ func main() {
 	)
 	flag.Parse()
 
-	log.Printf("krowl starting: node=%d seeds=%s", *nodeID, *seedFile)
+	mode := "distributed"
+	if *standalone {
+		mode = "standalone"
+	}
+	// Configure structured logging
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+	slog.Info("krowl starting", "mode", mode, "node", *nodeID, "seeds", *seedFile)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -91,7 +69,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Printf("received signal %v, shutting down...", sig)
+		slog.Info("received signal, shutting down", "signal", sig)
 		cancel()
 	}()
 
@@ -100,41 +78,67 @@ func main() {
 	// Dedup (bloom + Pebble)
 	dd, err := dedup.New(*pebblePath, *expectedURLs)
 	if err != nil {
-		log.Fatalf("failed to open dedup: %v", err)
+		slog.Error("failed to open dedup", "error", err)
+		os.Exit(1)
 	}
 	defer dd.Close()
 
 	// Domain manager
 	dm := domain.NewManager(userAgent)
 
-	// Local Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     *redisAddr,
-		PoolSize: 32,
-	})
-	defer rdb.Close()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("failed to connect to local Redis: %v", err)
-	}
+	// Frontier priority heap (replaces O(n) domain scan with O(log n) heap)
+	fr := frontier.New()
+	dm.SetFrontier(fr)
 
-	// Consul client
-	consulCfg := consul.DefaultConfig()
-	consulCfg.Address = *consulAddr
-	consulClient, err := consul.NewClient(consulCfg)
-	if err != nil {
-		log.Fatalf("failed to create Consul client: %v", err)
-	}
-
-	// Consistent hash ring (built from Consul)
+	// Consistent hash ring
 	hashRing := ring.New(ring.DefaultVnodes)
 
-	// Inbox sender + consumer
-	sender := inbox.NewSender(hashRing, *nodeID, dd)
-	defer sender.Close()
-	consumer := inbox.NewConsumer(rdb, dd, dm)
+	// --- Mode-dependent init ---
+	var (
+		rdb          *redis.Client
+		consulClient *consul.Client
+		sender       *inbox.Sender
+		consumer     *inbox.Consumer
+	)
 
-	// Build initial topology from Consul
-	updateTopology(consulClient, hashRing, sender, *nodeID)
+	if *standalone {
+		// Standalone: single node owns everything, no Consul, no Redis
+		hashRing.SetNodes([]ring.Node{{ID: *nodeID, Addr: "localhost"}})
+		sender = inbox.NewSender(hashRing, *nodeID, dd)
+		slog.Info("standalone mode: Consul and Redis disabled")
+	} else {
+		// Distributed: connect Redis + Consul, build topology
+		rdb = redis.NewClient(&redis.Options{
+			Addr:     *redisAddr,
+			PoolSize: 32,
+		})
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			slog.Error("failed to connect to local Redis", "error", err)
+			os.Exit(1)
+		}
+
+		consulCfg := consul.DefaultConfig()
+		consulCfg.Address = *consulAddr
+		cc, err := consul.NewClient(consulCfg)
+		if err != nil {
+			slog.Error("failed to create Consul client", "error", err)
+			os.Exit(1)
+		}
+		consulClient = cc
+
+		sender = inbox.NewSender(hashRing, *nodeID, dd)
+		consumer = inbox.NewConsumer(rdb, dd, dm)
+
+		updateTopology(consulClient, hashRing, sender, *nodeID)
+	}
+	defer func() {
+		if sender != nil {
+			sender.Close()
+		}
+		if rdb != nil {
+			rdb.Close()
+		}
+	}()
 
 	// Load seed domains for this node
 	loadSeeds(*seedFile, hashRing, *nodeID, dm)
@@ -142,7 +146,8 @@ func main() {
 	// WARC writer
 	ww, err := warcwriter.NewWriter(*warcDir, *nodeID, userAgent)
 	if err != nil {
-		log.Fatalf("failed to create WARC writer: %v", err)
+		slog.Error("failed to create WARC writer", "error", err)
+		os.Exit(1)
 	}
 	defer ww.Close()
 
@@ -150,72 +155,90 @@ func main() {
 	cpus := runtime.NumCPU()
 	fetchWorkers := max(1, cpus/4)
 	parseWorkers := cpus - fetchWorkers
-	log.Printf("workers: %d fetch, %d parse (cpus=%d)", fetchWorkers, parseWorkers, cpus)
+	slog.Info("worker pool configured", "fetch_workers", fetchWorkers, "parse_workers", parseWorkers, "cpus", cpus)
 
-	// Channel between fetchers and parsers
+	// Channels
 	fetchResults := make(chan fetch.Result, 10000)
+	warcResults := make(chan fetch.Result, 10000)
+	fanoutResults := make(chan fetch.Result, 10000)
 
-	// Fetch pool
-	fetchPool := fetch.NewPool(dm, fetchResults, userAgent, fetchWorkers)
-
-	// Parse pool
+	// Parse pool (metrics are wired directly to the centralized metrics package)
 	parsePool := parse.NewPool(fetchResults, dd, dm, sender, hashRing, *nodeID, parseWorkers)
 
-	// --- Start goroutines ---
+	// Fetch pool (writes to fanoutResults, which fans out to parsers + WARC)
+	fetchPool := fetch.NewPool(dm, fr, fanoutResults, userAgent, fetchWorkers)
 
-	// Metrics + health server (single mux)
+	// --- Start goroutines ---
+	var wg sync.WaitGroup
+
+	// Metrics + health server
 	go serveHTTP(*metricsPort)
 
-	// Consul topology watcher
-	go watchTopology(ctx, consulClient, hashRing, sender, *nodeID)
+	// Distributed-only goroutines
+	if !*standalone {
+		go watchTopology(ctx, consulClient, hashRing, sender, *nodeID)
+		go reportMetrics(ctx, dm, fr, hashRing, rdb)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			consumer.Run(ctx)
+		}()
+	} else {
+		go reportMetrics(ctx, dm, fr, hashRing, nil)
+	}
 
-	// Metrics reporter
-	go reportMetrics(ctx, dm, rdb)
-
-	// Inbox consumer
-	go consumer.Run(ctx)
-
-	// WARC writer goroutine: tee from fetchResults
-	// We wrap the channel so both parser and WARC writer see each result
-	warcResults := make(chan fetch.Result, 10000)
+	// WARC writer goroutine
+	var warcWg sync.WaitGroup
+	warcWg.Add(1)
 	go func() {
+		defer warcWg.Done()
 		for result := range warcResults {
 			if err := ww.WriteResult(result); err != nil {
-				log.Printf("[warc] write error: %v", err)
+				slog.Warn("WARC write error", "error", err)
+				m.WARCWriteErrors.Inc()
 			}
 		}
 	}()
 
 	// Fan-out: fetchers -> (parsers + WARC writer)
-	fanoutResults := make(chan fetch.Result, 10000)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for result := range fanoutResults {
-			// Send to both parser and WARC writer
 			fetchResults <- result
 			warcResults <- result
-			pagesFetched.Inc()
 		}
 		close(fetchResults)
 		close(warcResults)
 	}()
 
-	// Fetchers write to fanoutResults
-	fetchPool = fetch.NewPool(dm, fanoutResults, userAgent, fetchWorkers)
-
-	// Fetchers
-	go fetchPool.Run(ctx)
+	// Fetchers - when ctx is cancelled, Run returns and we close fanoutResults
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fetchPool.Run(ctx)
+		close(fanoutResults)
+	}()
 
 	// Parsers (blocks until fetchResults is closed or ctx cancelled)
 	parsePool.Run(ctx)
 
-	log.Println("krowl shutdown complete")
+	// Wait for all goroutines to finish draining
+	slog.Info("waiting for goroutines to finish")
+	wg.Wait()
+
+	// Wait for WARC writer to flush remaining records
+	slog.Info("flushing WARC writer")
+	warcWg.Wait()
+
+	slog.Info("krowl shutdown complete")
 }
 
 // updateTopology rebuilds the hash ring from Consul's service catalog.
 func updateTopology(client *consul.Client, hashRing *ring.Ring, sender *inbox.Sender, myID int) {
 	services, _, err := client.Health().Service("crawler", "", true, nil)
 	if err != nil {
-		log.Printf("failed to query Consul: %v", err)
+		slog.Error("failed to query Consul", "error", err)
 		return
 	}
 
@@ -241,7 +264,8 @@ func updateTopology(client *consul.Client, hashRing *ring.Ring, sender *inbox.Se
 
 	hashRing.SetNodes(nodes)
 	sender.UpdatePeers(nodes)
-	log.Printf("topology updated: %d nodes", len(nodes))
+	m.TopologyNodes.Set(float64(len(nodes)))
+	slog.Info("topology updated", "nodes", len(nodes))
 }
 
 // watchTopology long-polls Consul for topology changes.
@@ -260,7 +284,7 @@ func watchTopology(ctx context.Context, client *consul.Client, hashRing *ring.Ri
 			WaitTime:  5 * time.Minute,
 		})
 		if err != nil {
-			log.Printf("Consul watch error: %v", err)
+			slog.Error("Consul watch error", "error", err)
 			time.Sleep(time.Second)
 			continue
 		}
@@ -289,7 +313,8 @@ func watchTopology(ctx context.Context, client *consul.Client, hashRing *ring.Ri
 
 			hashRing.SetNodes(nodes)
 			sender.UpdatePeers(nodes)
-			log.Printf("topology changed: %d nodes", len(nodes))
+			m.TopologyNodes.Set(float64(len(nodes)))
+			slog.Info("topology changed", "nodes", len(nodes))
 		}
 	}
 }
@@ -298,7 +323,8 @@ func watchTopology(ctx context.Context, client *consul.Client, hashRing *ring.Ri
 func loadSeeds(path string, hashRing *ring.Ring, myID int, dm *domain.Manager) {
 	f, err := os.Open(path)
 	if err != nil {
-		log.Fatalf("failed to open seeds: %v", err)
+		slog.Error("failed to open seeds", "error", err, "path", path)
+		os.Exit(1)
 	}
 	defer f.Close()
 
@@ -314,7 +340,7 @@ func loadSeeds(path string, hashRing *ring.Ring, myID int, dm *domain.Manager) {
 			count++
 		}
 	}
-	log.Printf("loaded %d seed domains for node %d", count, myID)
+	slog.Info("seeds loaded", "count", count, "node", myID)
 }
 
 func serveHTTP(port int) {
@@ -324,13 +350,14 @@ func serveHTTP(port int) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ok")
 	})
-	log.Printf("HTTP server on :%d (/metrics, /health)", port)
+	slog.Info("HTTP server starting", "port", port, "endpoints", "/metrics, /health")
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), mux); err != nil {
-		log.Printf("HTTP server error: %v", err)
+		slog.Error("HTTP server error", "error", err)
 	}
 }
 
-func reportMetrics(ctx context.Context, dm *domain.Manager, rdb *redis.Client) {
+// reportMetrics periodically updates gauge metrics that need polling.
+func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontier, hashRing *ring.Ring, rdb *redis.Client) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -338,10 +365,16 @@ func reportMetrics(ctx context.Context, dm *domain.Manager, rdb *redis.Client) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			frontierSize.Set(float64(dm.TotalQueueLen()))
-			activeDomains.Set(float64(len(dm.ActiveDomains())))
-			inboxLen, _ := rdb.LLen(ctx, "inbox").Result()
-			inboxSize.Set(float64(inboxLen))
+			m.FrontierSize.Set(float64(dm.TotalQueueLen()))
+			m.FrontierDomains.Set(float64(fr.Len()))
+			m.ActiveDomains.Set(float64(len(dm.ActiveDomains())))
+			m.TrackedDomains.Set(float64(dm.DomainCount()))
+			m.TopologyNodes.Set(float64(hashRing.NodeCount()))
+
+			if rdb != nil {
+				inboxLen, _ := rdb.LLen(ctx, "inbox").Result()
+				m.InboxQueueSize.Set(float64(inboxLen))
+			}
 		}
 	}
 }

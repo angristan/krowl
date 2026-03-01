@@ -4,12 +4,13 @@ package inbox
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stanislas/krowl/internal/dedup"
 	"github.com/stanislas/krowl/internal/domain"
+	m "github.com/stanislas/krowl/internal/metrics"
 	"github.com/stanislas/krowl/internal/ring"
 )
 
@@ -79,7 +80,13 @@ func (s *Sender) Forward(ctx context.Context, rawURL string) error {
 		return nil // node not available, skip
 	}
 
-	return client.LPush(ctx, inboxKey, rawURL).Err()
+	err := client.LPush(ctx, inboxKey, rawURL).Err()
+	if err != nil {
+		m.InboxForwardErrors.Inc()
+		return err
+	}
+	m.InboxForwardedTotal.Inc()
+	return nil
 }
 
 // Close closes all peer connections.
@@ -115,6 +122,10 @@ func (c *Consumer) Run(ctx context.Context) {
 		}
 
 		urls, err := c.rdb.LPopCount(ctx, inboxKey, batchSize).Result()
+		if err == nil && len(urls) > 0 {
+			m.InboxReceivedTotal.Add(float64(len(urls)))
+			m.InboxBatchSize.Observe(float64(len(urls)))
+		}
 		if err != nil || len(urls) == 0 {
 			select {
 			case <-ctx.Done():
@@ -131,6 +142,6 @@ func (c *Consumer) Run(ctx context.Context) {
 			}
 		}
 
-		log.Printf("[inbox] processed %d URLs from inbox", len(urls))
+		slog.Debug("inbox batch processed", "count", len(urls))
 	}
 }

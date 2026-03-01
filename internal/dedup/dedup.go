@@ -10,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/stanislas/krowl/internal/bloom"
+	m "github.com/stanislas/krowl/internal/metrics"
 )
 
 type Dedup struct {
@@ -41,17 +42,21 @@ func New(pebblePath string, expectedURLs int) (*Dedup, error) {
 // IsNew returns true if the URL has not been seen before on this node.
 // If the URL is new, it is automatically marked as seen in both tiers.
 func (d *Dedup) IsNew(rawURL string) bool {
+	m.DedupLookups.Inc()
 	key := urlKey(rawURL)
 
 	// Tier 0: bloom filter - fast reject
 	if d.bloom.Test(key) {
+		m.DedupBloomHits.Inc()
 		// Probably seen. Verify with Pebble.
 		_, closer, err := d.pebble.Get(key)
 		if err == nil {
 			closer.Close()
+			m.DedupPebbleHits.Inc()
 			return false // definitely seen
 		}
 		// Bloom false positive: not in Pebble, so it's actually new.
+		m.DedupBloomFalsePositives.Inc()
 	} else {
 		// Definitely not in bloom, but still check Pebble
 		// (bloom is lost on restart, Pebble persists)
@@ -59,12 +64,14 @@ func (d *Dedup) IsNew(rawURL string) bool {
 		if err == nil {
 			closer.Close()
 			// In Pebble but not in bloom (post-restart). Warm bloom.
+			m.DedupPebbleHits.Inc()
 			d.bloom.Add(key)
 			return false
 		}
 	}
 
 	// New URL. Mark in both tiers.
+	m.DedupNewURLs.Inc()
 	d.bloom.Add(key)
 	_ = d.pebble.Set(key, []byte("1"), pebble.NoSync)
 	return true

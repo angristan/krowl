@@ -9,7 +9,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stanislas/krowl/internal/fetch"
+	m "github.com/stanislas/krowl/internal/metrics"
 )
 
 const (
@@ -65,7 +66,8 @@ func NewWriter(dir string, nodeID int, software string) (*Writer, error) {
 	return w, nil
 }
 
-// WriteResult writes a fetch result as a WARC response record.
+// WriteResult writes a fetch result as a paired WARC request + response record.
+// The two records are linked via WARC-Concurrent-To.
 func (w *Writer) WriteResult(result fetch.Result) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -79,7 +81,18 @@ func (w *Writer) WriteResult(result fetch.Result) error {
 		}
 	}
 
-	return w.writeResponse(result)
+	responseID := fmt.Sprintf("<urn:uuid:%s>", uuid.New().String())
+	requestID := fmt.Sprintf("<urn:uuid:%s>", uuid.New().String())
+
+	if err := w.writeRequest(result, requestID, responseID); err != nil {
+		return err
+	}
+	if err := w.writeResponse(result, responseID, requestID); err != nil {
+		return err
+	}
+	m.WARCRecordsWritten.Add(2)
+	m.WARCCurrentFileSize.Set(float64(w.written))
+	return nil
 }
 
 // Close flushes and closes the current WARC file.
@@ -109,8 +122,9 @@ func (w *Writer) rotate() error {
 	w.gzWriter = gzip.NewWriter(f)
 	w.written = 0
 	w.fileNum++
+	m.WARCFileRotations.Inc()
 
-	log.Printf("[warc] opened %s", name)
+	slog.Info("WARC file opened", "file", name)
 	return nil
 }
 
@@ -126,8 +140,51 @@ func (w *Writer) closeFile() error {
 	return nil
 }
 
-func (w *Writer) writeResponse(result fetch.Result) error {
-	recordID := fmt.Sprintf("<urn:uuid:%s>", uuid.New().String())
+func (w *Writer) writeRequest(result fetch.Result, requestID, responseID string) error {
+	date := time.Now().UTC().Format(time.RFC3339)
+
+	// Build the HTTP request block (request line + headers)
+	var httpBlock strings.Builder
+	requestURI := result.RequestURI
+	if requestURI == "" {
+		requestURI = "/"
+	}
+	method := result.Method
+	if method == "" {
+		method = "GET"
+	}
+	httpBlock.WriteString(fmt.Sprintf("%s %s HTTP/1.1\r\n", method, requestURI))
+	httpBlock.WriteString(fmt.Sprintf("Host: %s\r\n", result.Domain))
+	for key, vals := range result.RequestHeaders {
+		for _, val := range vals {
+			httpBlock.WriteString(fmt.Sprintf("%s: %s\r\n", key, val))
+		}
+	}
+	httpBlock.WriteString("\r\n")
+
+	payload := httpBlock.String()
+
+	var record strings.Builder
+	record.WriteString(WARCVersion + "\r\n")
+	record.WriteString("WARC-Type: request\r\n")
+	record.WriteString(fmt.Sprintf("WARC-Date: %s\r\n", date))
+	record.WriteString(fmt.Sprintf("WARC-Target-URI: %s\r\n", result.URL))
+	record.WriteString(fmt.Sprintf("WARC-Record-ID: %s\r\n", requestID))
+	record.WriteString(fmt.Sprintf("WARC-Concurrent-To: %s\r\n", responseID))
+	record.WriteString("Content-Type: application/http;msgtype=request\r\n")
+	record.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(payload)))
+	record.WriteString("\r\n")
+	record.WriteString(payload)
+	record.WriteString("\r\n\r\n")
+
+	data := record.String()
+	n, err := io.WriteString(w.gzWriter, data)
+	m.WARCBytesWritten.Add(float64(n))
+	w.written += int64(n)
+	return err
+}
+
+func (w *Writer) writeResponse(result fetch.Result, responseID, requestID string) error {
 	date := time.Now().UTC().Format(time.RFC3339)
 
 	// Build the HTTP response block (status line + headers + body)
@@ -146,11 +203,12 @@ func (w *Writer) writeResponse(result fetch.Result) error {
 	// WARC record
 	var record strings.Builder
 	record.WriteString(WARCVersion + "\r\n")
-	record.WriteString(fmt.Sprintf("WARC-Type: response\r\n"))
+	record.WriteString("WARC-Type: response\r\n")
 	record.WriteString(fmt.Sprintf("WARC-Date: %s\r\n", date))
 	record.WriteString(fmt.Sprintf("WARC-Target-URI: %s\r\n", result.URL))
-	record.WriteString(fmt.Sprintf("WARC-Record-ID: %s\r\n", recordID))
-	record.WriteString(fmt.Sprintf("Content-Type: application/http;msgtype=response\r\n"))
+	record.WriteString(fmt.Sprintf("WARC-Record-ID: %s\r\n", responseID))
+	record.WriteString(fmt.Sprintf("WARC-Concurrent-To: %s\r\n", requestID))
+	record.WriteString("Content-Type: application/http;msgtype=response\r\n")
 	record.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(payload)))
 	record.WriteString("\r\n")
 	record.WriteString(payload)
@@ -158,6 +216,7 @@ func (w *Writer) writeResponse(result fetch.Result) error {
 
 	data := record.String()
 	n, err := io.WriteString(w.gzWriter, data)
+	m.WARCBytesWritten.Add(float64(n))
 	w.written += int64(n)
 	return err
 }

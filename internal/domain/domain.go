@@ -10,28 +10,44 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/stanislas/krowl/internal/frontier"
+	"github.com/stanislas/krowl/internal/sitemap"
+	"github.com/temoto/robotstxt"
 )
 
 const (
 	DefaultCrawlDelay  = 1 * time.Second
+	MinCrawlDelay      = 250 * time.Millisecond // floor: never faster than this
+	MaxCrawlDelay      = 30 * time.Second       // ceiling: give up sooner rather than crawling glacially
 	RobotsExpiry       = 24 * time.Hour
 	RobotsMaxSize      = 512 * 1024 // 512KB
 	MaxConsecutiveErrs = 10
+
+	// Adaptive rate: delay = max(MinCrawlDelay, latency * multiplier)
+	// A 200ms response -> 1s delay. A 2s response -> 10s delay.
+	AdaptiveMultiplier = 5
 )
 
 // State holds all per-domain crawl state.
 type State struct {
-	// robots.txt
-	RobotsBody   string
+	// robots.txt (parsed via temoto/robotstxt)
+	Robots       *robotstxt.RobotsData
+	RobotsGroup  *robotstxt.Group // cached group for our user-agent
 	RobotsExpiry time.Time
 
 	// Rate limiting
-	CrawlDelay time.Duration
-	LastFetch  time.Time
+	CrawlDelay       time.Duration
+	RobotsCrawlDelay time.Duration // crawl-delay from robots.txt (0 if unset)
+	LastFetch        time.Time
+	AvgLatency       time.Duration // exponential moving average of response time
 
 	// Health
 	ConsecutiveErrors int
 	BackoffUntil      time.Time
+
+	// Sitemap
+	SitemapChecked bool // true once we've attempted to fetch the sitemap
 
 	// Frontier: URLs to crawl for this domain
 	Queue []string
@@ -39,9 +55,11 @@ type State struct {
 
 // Manager manages per-domain state. All methods are thread-safe.
 type Manager struct {
-	mu      sync.RWMutex
-	domains map[string]*State
-	client  *http.Client
+	mu       sync.RWMutex
+	domains  map[string]*State
+	client   *http.Client
+	frontier *frontier.Frontier // if non-nil, domains are pushed here on enqueue
+	sitemap  *sitemap.Fetcher
 
 	userAgent string
 }
@@ -53,8 +71,17 @@ func NewManager(userAgent string) *Manager {
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		sitemap:   sitemap.NewFetcher(userAgent),
 		userAgent: userAgent,
 	}
+}
+
+// SetFrontier attaches a frontier heap so that Enqueue automatically
+// pushes domains into the priority queue.
+func (m *Manager) SetFrontier(f *frontier.Frontier) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.frontier = f
 }
 
 // GetOrCreate returns the state for a domain, creating it if needed.
@@ -71,16 +98,26 @@ func (m *Manager) GetOrCreate(domain string) *State {
 	return s
 }
 
-// Enqueue adds a URL to a domain's frontier.
+// Enqueue adds a URL to a domain's frontier. If a frontier heap is
+// attached, the domain is pushed into it so fetchers can find it.
 func (m *Manager) Enqueue(domain, rawURL string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	s, ok := m.domains[domain]
 	if !ok {
 		s = &State{CrawlDelay: DefaultCrawlDelay}
 		m.domains[domain] = s
 	}
+	wasEmpty := len(s.Queue) == 0
 	s.Queue = append(s.Queue, rawURL)
+	fr := m.frontier // capture under lock
+	m.mu.Unlock()
+
+	// Push domain into frontier if this is the first URL (domain wasn't
+	// already in the heap). If it already has URLs, it's either in the
+	// heap already or a fetcher has it checked out and will re-push.
+	if wasEmpty && fr != nil {
+		fr.Push(domain, m.NextFetchTime(domain))
+	}
 }
 
 // Dequeue pops the next URL from a domain's frontier.
@@ -109,32 +146,52 @@ func (m *Manager) QueueLen(domain string) int {
 }
 
 // IsAllowed checks if a path is allowed by the domain's robots.txt.
-// Fetches and caches robots.txt if not cached or expired.
-func (m *Manager) IsAllowed(domain, path string) (bool, error) {
+// Fetches, parses, and caches robots.txt if not cached or expired.
+func (m *Manager) IsAllowed(d, path string) (bool, error) {
 	m.mu.RLock()
-	s, ok := m.domains[domain]
-	robotsValid := ok && time.Now().Before(s.RobotsExpiry)
-	var body string
+	s, ok := m.domains[d]
+	robotsValid := ok && s.RobotsGroup != nil && time.Now().Before(s.RobotsExpiry)
+	var group *robotstxt.Group
 	if robotsValid {
-		body = s.RobotsBody
+		group = s.RobotsGroup
 	}
 	m.mu.RUnlock()
 
 	if !robotsValid {
-		var err error
-		body, err = m.fetchRobots(domain)
+		body, err := m.fetchRobots(d)
 		if err != nil {
 			// Can't fetch robots.txt: allow by default
 			return true, nil
 		}
+
+		robots, err := robotstxt.FromBytes([]byte(body))
+		if err != nil {
+			// Malformed robots.txt: allow by default
+			return true, nil
+		}
+
+		group = robots.FindGroup(m.userAgent)
+
 		m.mu.Lock()
-		s = m.getOrCreateLocked(domain)
-		s.RobotsBody = body
+		s = m.getOrCreateLocked(d)
+		s.Robots = robots
+		s.RobotsGroup = group
 		s.RobotsExpiry = time.Now().Add(RobotsExpiry)
+
+		// Store robots.txt crawl-delay as a floor for adaptive rate
+		if group.CrawlDelay > 0 {
+			s.RobotsCrawlDelay = time.Duration(group.CrawlDelay)
+			if s.RobotsCrawlDelay > s.CrawlDelay {
+				s.CrawlDelay = s.RobotsCrawlDelay
+			}
+		}
 		m.mu.Unlock()
+
+		// Trigger sitemap discovery in the background
+		go m.DiscoverSitemap(d)
 	}
 
-	return isPathAllowed(body, m.userAgent, path), nil
+	return group.Test(path), nil
 }
 
 // CanFetch checks if we can fetch from this domain now (rate limiting).
@@ -162,13 +219,36 @@ func (m *Manager) CanFetch(domain string) (bool, time.Duration) {
 	return true, 0
 }
 
-// RecordFetch marks that we just fetched from this domain.
-func (m *Manager) RecordFetch(domain string) {
+// RecordFetch marks that we just fetched from this domain and adapts
+// the crawl delay based on observed response latency.
+func (m *Manager) RecordFetch(domain string, latency time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.getOrCreateLocked(domain)
 	s.LastFetch = time.Now()
 	s.ConsecutiveErrors = 0
+
+	// Update exponential moving average of latency (alpha=0.3)
+	if s.AvgLatency == 0 {
+		s.AvgLatency = latency
+	} else {
+		s.AvgLatency = time.Duration(float64(s.AvgLatency)*0.7 + float64(latency)*0.3)
+	}
+
+	// Adaptive delay: latency * multiplier, clamped to [min, max]
+	// But never go below robots.txt crawl-delay if set
+	adaptive := time.Duration(float64(s.AvgLatency) * AdaptiveMultiplier)
+	if adaptive < MinCrawlDelay {
+		adaptive = MinCrawlDelay
+	}
+	if adaptive > MaxCrawlDelay {
+		adaptive = MaxCrawlDelay
+	}
+	// Respect robots.txt crawl-delay as a floor
+	if s.RobotsCrawlDelay > 0 && adaptive < s.RobotsCrawlDelay {
+		adaptive = s.RobotsCrawlDelay
+	}
+	s.CrawlDelay = adaptive
 }
 
 // RecordError records a fetch error for a domain.
@@ -196,6 +276,52 @@ func (m *Manager) ActiveDomains() []string {
 		}
 	}
 	return out
+}
+
+// DiscoverSitemap fetches the sitemap for a domain and enqueues any URLs found.
+// Should be called after the first robots.txt fetch. Safe to call multiple times
+// (only runs once per domain).
+func (m *Manager) DiscoverSitemap(d string) {
+	m.mu.Lock()
+	s := m.getOrCreateLocked(d)
+	if s.SitemapChecked {
+		m.mu.Unlock()
+		return
+	}
+	s.SitemapChecked = true
+
+	// Collect Sitemap: directives from robots.txt
+	var hints []string
+	if s.Robots != nil {
+		hints = s.Robots.Sitemaps
+	}
+	m.mu.Unlock()
+
+	// Fetch sitemap (network I/O, don't hold lock)
+	urls := m.sitemap.FetchURLs(d, hints)
+	for _, u := range urls {
+		m.Enqueue(d, u)
+	}
+}
+
+// NextFetchTime returns the earliest time this domain can be fetched.
+// Takes into account crawl delay and error backoff.
+func (m *Manager) NextFetchTime(domain string) time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.domains[domain]
+	if !ok {
+		return time.Now() // new domain, fetch immediately
+	}
+
+	// If in backoff, that takes precedence
+	if time.Now().Before(s.BackoffUntil) {
+		return s.BackoffUntil
+	}
+
+	// Otherwise next fetch = last fetch + crawl delay
+	next := s.LastFetch.Add(s.CrawlDelay)
+	return next
 }
 
 // DomainCount returns the total number of tracked domains.
@@ -249,59 +375,17 @@ func (m *Manager) fetchRobots(domain string) (string, error) {
 	return string(body), nil
 }
 
-// isPathAllowed is a simple robots.txt parser.
-// Checks if the given user agent is allowed to access the path.
-func isPathAllowed(robotsTxt, userAgent, path string) bool {
-	if robotsTxt == "" {
-		return true
-	}
-
-	lines := strings.Split(robotsTxt, "\n")
-	inBlock := false
-	defaultAllow := true
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#") || line == "" {
-			continue
-		}
-
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		field := strings.TrimSpace(strings.ToLower(parts[0]))
-		value := strings.TrimSpace(parts[1])
-
-		switch field {
-		case "user-agent":
-			ua := strings.ToLower(value)
-			inBlock = ua == "*" || strings.Contains(strings.ToLower(userAgent), ua)
-		case "disallow":
-			if inBlock && value != "" {
-				if strings.HasPrefix(path, value) {
-					return false
-				}
-			}
-		case "allow":
-			if inBlock && value != "" {
-				if strings.HasPrefix(path, value) {
-					return true
-				}
-			}
-		case "crawl-delay":
-			// Parsed elsewhere when caching robots
-		}
-	}
-
-	return defaultAllow
-}
-
 // ExtractDomain extracts the hostname from a URL string.
+// Strips the www. prefix so that www.example.com and example.com
+// map to the same domain for consistent hash ring assignment.
 func ExtractDomain(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return ""
 	}
-	return strings.ToLower(u.Hostname())
+	host := strings.ToLower(u.Hostname())
+	if strings.HasPrefix(host, "www.") {
+		host = host[4:]
+	}
+	return host
 }
