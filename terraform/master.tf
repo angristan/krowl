@@ -7,8 +7,9 @@ resource "digitalocean_droplet" "master" {
   ssh_keys = [var.ssh_key_fingerprint]
 
   user_data = templatefile("${path.module}/scripts/master-init.sh", {
-    tailscale_auth_key = var.tailscale_auth_key
-    consul_encrypt_key = var.consul_encrypt_key
+    tailscale_auth_key   = var.tailscale_auth_key
+    consul_encrypt_key   = var.consul_encrypt_key
+    grafana_dashboard_b64 = base64encode(file("${path.module}/../grafana/dashboards/krowl.json"))
   })
 
   tags = ["krowl", "master"]

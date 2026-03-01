@@ -137,6 +137,38 @@ apt-get install -y -qq grafana
 
 # Bind to all interfaces (accessed via Tailscale)
 sed -i 's/;http_addr =.*/http_addr = 0.0.0.0/' /etc/grafana/grafana.ini
+
+# Provision Prometheus datasource
+cat >/etc/grafana/provisioning/datasources/prometheus.yml <<'DS'
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://localhost:9090
+    access: proxy
+    isDefault: true
+    editable: false
+DS
+
+# Provision dashboard directory
+mkdir -p /var/lib/grafana/dashboards
+cat >/etc/grafana/provisioning/dashboards/default.yml <<'DASH'
+apiVersion: 1
+providers:
+  - name: default
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
+DASH
+
+# Decode and install krowl dashboard
+echo "${grafana_dashboard_b64}" | base64 -d >/var/lib/grafana/dashboards/krowl.json
+chown -R grafana:grafana /var/lib/grafana/dashboards
+
 systemctl enable grafana-server
 systemctl start grafana-server
 

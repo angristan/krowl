@@ -1,0 +1,452 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "schemaVersion": 39,
+  "tags": ["krowl", "crawler"],
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["5s", "10s", "30s", "1m", "5m"]},
+  "timezone": "utc",
+  "title": "krowl Crawler",
+  "uid": "krowl-overview",
+  "version": 1,
+  "refresh": "10s",
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": true, "text": ["All"], "value": ["$__all"]},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "label_values(krowl_pages_fetched_total, instance)",
+        "includeAll": true,
+        "multi": true,
+        "name": "instance",
+        "query": {"query": "label_values(krowl_pages_fetched_total, instance)", "refId": "StandardVariableQuery"},
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "panels": [
+
+    {"type": "row", "title": "Overview", "collapsed": false, "id": 100, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "panels": []},
+
+    {
+      "type": "stat", "title": "Pages / sec", "id": 1,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+      "targets": [{"expr": "sum(rate(krowl_pages_fetched_total{instance=~\"$instance\"}[$__rate_interval]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "color": {"mode": "fixed", "fixedColor": "green"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
+    },
+    {
+      "type": "stat", "title": "URLs Discovered / sec", "id": 2,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+      "targets": [{"expr": "sum(rate(krowl_urls_discovered_total{instance=~\"$instance\"}[$__rate_interval]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ops", "color": {"mode": "fixed", "fixedColor": "blue"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
+    },
+    {
+      "type": "stat", "title": "Active Domains", "id": 3,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
+      "targets": [{"expr": "sum(krowl_active_domains{instance=~\"$instance\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "purple"}, "thresholds": {"mode": "absolute", "steps": [{"color": "purple", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
+    },
+    {
+      "type": "stat", "title": "Frontier Size", "id": 4,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
+      "targets": [{"expr": "sum(krowl_frontier_size{instance=~\"$instance\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "yellow"}, "thresholds": {"mode": "absolute", "steps": [{"color": "yellow", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "area"}
+    },
+    {
+      "type": "stat", "title": "Fetch Errors / sec", "id": 5,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
+      "targets": [{"expr": "sum(rate(krowl_fetch_errors_total{instance=~\"$instance\"}[$__rate_interval]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ops", "color": {"mode": "fixed", "fixedColor": "red"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 10}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
+    },
+    {
+      "type": "stat", "title": "Cluster Nodes", "id": 6,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
+      "targets": [{"expr": "max(krowl_topology_nodes{instance=~\"$instance\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "orange"}, "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+
+    {"type": "row", "title": "HTTP Fetch Latency", "collapsed": false, "id": 101, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Fetch Duration Percentiles", "id": 7,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 6},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(krowl_fetch_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(krowl_fetch_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(krowl_fetch_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Request Phase Latency (p50)", "id": 8,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 6},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(krowl_dns_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "DNS", "refId": "A"},
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(krowl_connect_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "Connect", "refId": "B"},
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(krowl_tls_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "TLS", "refId": "C"},
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(krowl_ttfb_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "TTFB", "refId": "D"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Request Phase Latency (p95)", "id": 9,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 6},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(krowl_dns_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "DNS", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(krowl_connect_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "Connect", "refId": "B"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(krowl_tls_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "TLS", "refId": "C"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(krowl_ttfb_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "TTFB", "refId": "D"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "HTTP Responses", "collapsed": false, "id": 102, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Pages by Status Code", "id": 10,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 15},
+      "targets": [
+        {"expr": "sum by (status) (rate(krowl_pages_fetched_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "{{status}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"fillOpacity": 30, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Response Size Percentiles", "id": 11,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 15},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(krowl_response_size_bytes_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(krowl_response_size_bytes_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(krowl_response_size_bytes_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Fetch Errors by Reason", "id": 12,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 15},
+      "targets": [
+        {"expr": "sum by (reason) (rate(krowl_fetch_errors_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "{{reason}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 30, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "Content & Links", "collapsed": false, "id": 103, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Content Types", "id": 13,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 24},
+      "targets": [
+        {"expr": "sum by (type) (rate(krowl_content_types_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "{{type}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 30, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Links per Page Percentiles", "id": 14,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 24},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(krowl_links_per_page_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(krowl_links_per_page_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(krowl_links_per_page_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Redirects per Fetch", "id": 15,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 24},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(krowl_redirects_followed_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(krowl_redirects_followed_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "rate(krowl_redirects_followed_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(krowl_redirects_followed_count{instance=~\"$instance\"}[$__rate_interval])", "legendFormat": "avg", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "URL Pipeline", "collapsed": false, "id": 104, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "URL Flow Rates", "id": 16,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 33},
+      "targets": [
+        {"expr": "sum(rate(krowl_urls_discovered_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Discovered", "refId": "A"},
+        {"expr": "sum(rate(krowl_urls_enqueued_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Enqueued (local)", "refId": "B"},
+        {"expr": "sum(rate(krowl_urls_forwarded_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Forwarded (peer)", "refId": "C"},
+        {"expr": "sum(rate(krowl_urls_deduped_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Deduped (dropped)", "refId": "D"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Robots, Content Dedup & Sitemaps", "id": 17,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 33},
+      "targets": [
+        {"expr": "sum(rate(krowl_robots_blocked_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Robots blocked", "refId": "A"},
+        {"expr": "sum(rate(krowl_content_dedup_skipped_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Content dedup (soft-404)", "refId": "B"},
+        {"expr": "sum(rate(krowl_sitemap_urls_discovered_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Sitemap URLs", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "Dedup Internals", "collapsed": false, "id": 105, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 41}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Dedup Operations", "id": 18,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 42},
+      "targets": [
+        {"expr": "sum(rate(krowl_dedup_lookups_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Total lookups", "refId": "A"},
+        {"expr": "sum(rate(krowl_dedup_new_urls_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "New URLs", "refId": "B"},
+        {"expr": "sum(rate(krowl_dedup_bloom_hits_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Bloom hits", "refId": "C"},
+        {"expr": "sum(rate(krowl_dedup_pebble_hits_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Pebble confirmed", "refId": "D"},
+        {"expr": "sum(rate(krowl_dedup_bloom_false_positives_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Bloom false positives", "refId": "E"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Bloom False Positive Rate", "id": 19,
+      "description": "Ratio of bloom false positives to bloom hits. Lower is better. A rising rate indicates the bloom filter is saturating.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 42},
+      "targets": [
+        {"expr": "sum(rate(krowl_dedup_bloom_false_positives_total{instance=~\"$instance\"}[$__rate_interval])) / sum(rate(krowl_dedup_bloom_hits_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "False positive ratio", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"fillOpacity": 20}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.05}, {"color": "red", "value": 0.15}]}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "DNS Cache", "collapsed": false, "id": 106, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 50}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "DNS Cache Hit Ratio", "id": 20,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 51},
+      "targets": [
+        {"expr": "sum(rate(krowl_dns_cache_hits_total{instance=~\"$instance\"}[$__rate_interval])) / (sum(rate(krowl_dns_cache_hits_total{instance=~\"$instance\"}[$__rate_interval])) + sum(rate(krowl_dns_cache_misses_total{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "Hit ratio", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "DNS Cache Size", "id": 21,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 51},
+      "targets": [
+        {"expr": "sum(krowl_dns_cache_size{instance=~\"$instance\"})", "legendFormat": "Entries", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "DNS Cache Evictions", "id": 22,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 51},
+      "targets": [
+        {"expr": "sum(rate(krowl_dns_cache_evictions_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Evictions/sec", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "WARC Storage", "collapsed": false, "id": 107, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 59}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "WARC Write Throughput", "id": 23,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 60},
+      "targets": [
+        {"expr": "sum(rate(krowl_warc_bytes_written_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Bytes/sec", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "WARC Records & Rotations", "id": 24,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 60},
+      "targets": [
+        {"expr": "sum(rate(krowl_warc_records_written_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Records/sec", "refId": "A"},
+        {"expr": "sum(increase(krowl_warc_file_rotations_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Rotations", "refId": "B"},
+        {"expr": "sum(rate(krowl_warc_write_errors_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Write errors", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "WARC Current File Size", "id": 25,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 60},
+      "targets": [
+        {"expr": "krowl_warc_current_file_bytes{instance=~\"$instance\"}", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "Inbox (Cross-Shard)", "collapsed": false, "id": 108, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 68}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Inbox Forward / Receive Rate", "id": 26,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 69},
+      "targets": [
+        {"expr": "sum(rate(krowl_inbox_forwarded_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Forwarded", "refId": "A"},
+        {"expr": "sum(rate(krowl_inbox_received_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Received", "refId": "B"},
+        {"expr": "sum(rate(krowl_inbox_forward_errors_total{instance=~\"$instance\"}[$__rate_interval]))", "legendFormat": "Forward errors", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Inbox Queue Depth", "id": 27,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 69},
+      "targets": [
+        {"expr": "krowl_inbox_queue_size{instance=~\"$instance\"}", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Inbox Batch Size Percentiles", "id": 28,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 69},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(krowl_inbox_batch_size_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(krowl_inbox_batch_size_bucket{instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "Frontier & Crawl Status", "collapsed": false, "id": 109, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 77}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Frontier Size", "id": 29,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 78},
+      "targets": [
+        {"expr": "sum(krowl_frontier_size{instance=~\"$instance\"})", "legendFormat": "Total URLs queued", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 20, "gradientMode": "scheme"}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Domain Counts", "id": 30,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 78},
+      "targets": [
+        {"expr": "sum(krowl_tracked_domains{instance=~\"$instance\"})", "legendFormat": "Tracked (total)", "refId": "A"},
+        {"expr": "sum(krowl_frontier_domains{instance=~\"$instance\"})", "legendFormat": "In frontier", "refId": "B"},
+        {"expr": "sum(krowl_active_domains{instance=~\"$instance\"})", "legendFormat": "Active (with URLs)", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "Go Runtime", "collapsed": false, "id": 110, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 86}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "Goroutines", "id": 31,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 87},
+      "targets": [
+        {"expr": "go_goroutines{instance=~\"$instance\"}", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Heap Memory", "id": 32,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 87},
+      "targets": [
+        {"expr": "go_memstats_heap_alloc_bytes{instance=~\"$instance\"}", "legendFormat": "{{instance}} heap alloc", "refId": "A"},
+        {"expr": "go_memstats_heap_sys_bytes{instance=~\"$instance\"}", "legendFormat": "{{instance}} heap sys", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "GC Pause Duration", "id": 33,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 87},
+      "targets": [
+        {"expr": "rate(go_gc_duration_seconds_sum{instance=~\"$instance\"}[$__rate_interval])", "legendFormat": "{{instance}} GC time/sec", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+
+    {"type": "row", "title": "Process", "collapsed": false, "id": 111, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 95}, "panels": []},
+
+    {
+      "type": "timeseries", "title": "CPU Usage", "id": 34,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 96},
+      "targets": [
+        {"expr": "rate(process_cpu_seconds_total{instance=~\"$instance\"}[$__rate_interval])", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Resident Memory", "id": 35,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 96},
+      "targets": [
+        {"expr": "process_resident_memory_bytes{instance=~\"$instance\"}", "legendFormat": "{{instance}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "decbytes", "custom": {"fillOpacity": 20}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    },
+    {
+      "type": "timeseries", "title": "Open File Descriptors", "id": 36,
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 96},
+      "targets": [
+        {"expr": "process_open_fds{instance=~\"$instance\"}", "legendFormat": "{{instance}} open", "refId": "A"},
+        {"expr": "process_max_fds{instance=~\"$instance\"}", "legendFormat": "{{instance}} max", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi", "sort": "desc"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}}
+    }
+  ]
+}
