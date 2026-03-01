@@ -357,7 +357,7 @@ func loadSeeds(path string, hashRing *ring.Ring, myID int, dm *domain.Manager) {
 			continue
 		}
 		if hashRing.Owner(d) == myID {
-			dm.Enqueue(d, fmt.Sprintf("https://%s/", d))
+			dm.Enqueue(d, fmt.Sprintf("https://%s/", d), 0) // seeds are depth 0
 			count++
 		}
 	}

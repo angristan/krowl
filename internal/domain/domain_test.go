@@ -29,21 +29,21 @@ func TestNewManager(t *testing.T) {
 
 func TestEnqueueDequeue_FIFO(t *testing.T) {
 	m := NewManager("bot")
-	m.Enqueue("example.com", "https://example.com/a")
-	m.Enqueue("example.com", "https://example.com/b")
-	m.Enqueue("example.com", "https://example.com/c")
+	m.Enqueue("example.com", "https://example.com/a", 0)
+	m.Enqueue("example.com", "https://example.com/b", 1)
+	m.Enqueue("example.com", "https://example.com/c", 2)
 
-	got := m.Dequeue("example.com")
-	if got != "https://example.com/a" {
-		t.Fatalf("expected first URL, got %q", got)
+	got, ok := m.Dequeue("example.com")
+	if !ok || got.URL != "https://example.com/a" || got.Depth != 0 {
+		t.Fatalf("expected first URL at depth 0, got %+v, ok=%v", got, ok)
 	}
-	got = m.Dequeue("example.com")
-	if got != "https://example.com/b" {
-		t.Fatalf("expected second URL, got %q", got)
+	got, ok = m.Dequeue("example.com")
+	if !ok || got.URL != "https://example.com/b" || got.Depth != 1 {
+		t.Fatalf("expected second URL at depth 1, got %+v, ok=%v", got, ok)
 	}
-	got = m.Dequeue("example.com")
-	if got != "https://example.com/c" {
-		t.Fatalf("expected third URL, got %q", got)
+	got, ok = m.Dequeue("example.com")
+	if !ok || got.URL != "https://example.com/c" || got.Depth != 2 {
+		t.Fatalf("expected third URL at depth 2, got %+v, ok=%v", got, ok)
 	}
 }
 
@@ -51,17 +51,17 @@ func TestDequeue_EmptyQueue(t *testing.T) {
 	m := NewManager("bot")
 
 	// Dequeue from non-existent domain
-	got := m.Dequeue("noexist.com")
-	if got != "" {
-		t.Fatalf("expected empty string from non-existent domain, got %q", got)
+	_, ok := m.Dequeue("noexist.com")
+	if ok {
+		t.Fatal("expected ok=false from non-existent domain")
 	}
 
 	// Enqueue one, dequeue two
-	m.Enqueue("example.com", "https://example.com/a")
+	m.Enqueue("example.com", "https://example.com/a", 0)
 	m.Dequeue("example.com")
-	got = m.Dequeue("example.com")
-	if got != "" {
-		t.Fatalf("expected empty string from exhausted queue, got %q", got)
+	_, ok = m.Dequeue("example.com")
+	if ok {
+		t.Fatal("expected ok=false from exhausted queue")
 	}
 }
 
@@ -72,9 +72,9 @@ func TestQueueLen(t *testing.T) {
 		t.Fatal("expected 0 for unknown domain")
 	}
 
-	m.Enqueue("example.com", "https://example.com/1")
-	m.Enqueue("example.com", "https://example.com/2")
-	m.Enqueue("example.com", "https://example.com/3")
+	m.Enqueue("example.com", "https://example.com/1", 0)
+	m.Enqueue("example.com", "https://example.com/2", 0)
+	m.Enqueue("example.com", "https://example.com/3", 0)
 
 	if n := m.QueueLen("example.com"); n != 3 {
 		t.Fatalf("expected QueueLen 3, got %d", n)
@@ -279,8 +279,8 @@ func TestCanFetch_RespectsRateLimit(t *testing.T) {
 func TestActiveDomains(t *testing.T) {
 	m := NewManager("bot")
 
-	m.Enqueue("a.com", "https://a.com/1")
-	m.Enqueue("b.com", "https://b.com/1")
+	m.Enqueue("a.com", "https://a.com/1", 0)
+	m.Enqueue("b.com", "https://b.com/1", 0)
 	m.GetOrCreate("c.com") // create domain but no URLs
 
 	active := m.ActiveDomains()
@@ -308,9 +308,9 @@ func TestTotalQueueLen(t *testing.T) {
 		t.Fatal("expected 0 total queue len initially")
 	}
 
-	m.Enqueue("a.com", "https://a.com/1")
-	m.Enqueue("a.com", "https://a.com/2")
-	m.Enqueue("b.com", "https://b.com/1")
+	m.Enqueue("a.com", "https://a.com/1", 0)
+	m.Enqueue("a.com", "https://a.com/2", 0)
+	m.Enqueue("b.com", "https://b.com/1", 0)
 
 	if n := m.TotalQueueLen(); n != 3 {
 		t.Fatalf("expected TotalQueueLen 3, got %d", n)
@@ -343,7 +343,7 @@ func TestDomainCount(t *testing.T) {
 	}
 
 	// Enqueue to new domain creates it
-	m.Enqueue("d.com", "https://d.com/1")
+	m.Enqueue("d.com", "https://d.com/1", 0)
 	if m.DomainCount() != 4 {
 		t.Fatalf("expected 4 domains after enqueue, got %d", m.DomainCount())
 	}
@@ -381,7 +381,7 @@ func TestSetFrontier_EnqueuePushesToFrontier(t *testing.T) {
 	m.SetFrontier(f)
 
 	// Enqueue a URL to a new domain - should push to frontier
-	m.Enqueue("example.com", "https://example.com/page1")
+	m.Enqueue("example.com", "https://example.com/page1", 0)
 
 	if !f.Contains("example.com") {
 		t.Fatal("expected domain to be pushed to frontier on first enqueue")
@@ -398,8 +398,8 @@ func TestSetFrontier_SecondEnqueueDoesNotDuplicate(t *testing.T) {
 	f := frontier.New()
 	m.SetFrontier(f)
 
-	m.Enqueue("example.com", "https://example.com/page1")
-	m.Enqueue("example.com", "https://example.com/page2")
+	m.Enqueue("example.com", "https://example.com/page1", 0)
+	m.Enqueue("example.com", "https://example.com/page2", 0)
 
 	// Should still be 1 entry in frontier (second enqueue was not empty->non-empty)
 	if f.Len() != 1 {
@@ -412,8 +412,8 @@ func TestSetFrontier_MultipleDomains(t *testing.T) {
 	f := frontier.New()
 	m.SetFrontier(f)
 
-	m.Enqueue("a.com", "https://a.com/1")
-	m.Enqueue("b.com", "https://b.com/1")
+	m.Enqueue("a.com", "https://a.com/1", 0)
+	m.Enqueue("b.com", "https://b.com/1", 0)
 
 	if f.Len() != 2 {
 		t.Fatalf("expected frontier len 2, got %d", f.Len())
