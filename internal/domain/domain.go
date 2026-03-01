@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/stanislas/krowl/internal/frontier"
@@ -25,9 +26,10 @@ const (
 	MaxConsecutiveErrs = 10         // start exponential backoff after this many
 	MaxConsecutiveDead = 30         // permanently give up on a domain after this many
 
-	MaxQueuePerDomain = 50000 // cap URLs queued per domain (prevents crawler traps)
-	MaxURLLength      = 2048  // reject URLs longer than this
-	MaxCrawlDepth     = 25    // maximum hops from a seed URL
+	MaxQueuePerDomain  = 10000     // cap URLs queued per domain (prevents crawler traps)
+	DefaultMaxFrontier = 2_000_000 // default global cap on total queued URLs (~250MB)
+	MaxURLLength       = 2048      // reject URLs longer than this
+	MaxCrawlDepth      = 25        // maximum hops from a seed URL
 
 	// Adaptive rate: delay = max(MinCrawlDelay, latency * multiplier)
 	// A 200ms response -> 1s delay. A 2s response -> 10s delay.
@@ -75,18 +77,21 @@ type Manager struct {
 	frontier *frontier.Frontier // if non-nil, domains are pushed here on enqueue
 	sitemap  *sitemap.Fetcher
 
-	userAgent string
+	userAgent   string
+	totalQueued atomic.Int64 // global count of URLs across all domain queues
+	maxFrontier int64        // global cap; 0 = unlimited
 }
 
 // NewManager creates a domain manager with the given user agent string.
-func NewManager(userAgent string) *Manager {
+func NewManager(userAgent string, maxFrontier int) *Manager {
 	return &Manager{
 		domains: make(map[string]*State),
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 5 * time.Second,
 		},
-		sitemap:   sitemap.NewFetcher(userAgent),
-		userAgent: userAgent,
+		sitemap:     sitemap.NewFetcher(userAgent),
+		userAgent:   userAgent,
+		maxFrontier: int64(maxFrontier),
 	}
 }
 
@@ -120,6 +125,10 @@ func (m *Manager) Enqueue(domain, rawURL string, depth int) {
 	if len(rawURL) > MaxURLLength || depth > MaxCrawlDepth {
 		return
 	}
+	// Global backpressure: drop URL if frontier is full
+	if m.maxFrontier > 0 && m.totalQueued.Load() >= m.maxFrontier {
+		return
+	}
 	m.mu.Lock()
 	s, ok := m.domains[domain]
 	if !ok {
@@ -132,6 +141,7 @@ func (m *Manager) Enqueue(domain, rawURL string, depth int) {
 	}
 	wasEmpty := len(s.Queue) == 0
 	s.Queue = append(s.Queue, QueueItem{URL: rawURL, Depth: depth})
+	m.totalQueued.Add(1)
 	fr := m.frontier // capture under lock
 	m.mu.Unlock()
 
@@ -154,6 +164,7 @@ func (m *Manager) Dequeue(domain string) (QueueItem, bool) {
 	}
 	item := s.Queue[0]
 	s.Queue = s.Queue[1:]
+	m.totalQueued.Add(-1)
 	return item, true
 }
 
@@ -373,13 +384,7 @@ func (m *Manager) DomainCount() int {
 
 // TotalQueueLen returns the total number of URLs across all frontiers.
 func (m *Manager) TotalQueueLen() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	total := 0
-	for _, s := range m.domains {
-		total += len(s.Queue)
-	}
-	return total
+	return int(m.totalQueued.Load())
 }
 
 // Snapshot returns a copy of all non-empty domain queues.

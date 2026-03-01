@@ -86,6 +86,11 @@ func (d *Dedup) MarkSeen(rawURL string) {
 	_ = d.pebble.Set(key, []byte("1"), pebble.NoSync)
 }
 
+// Metrics returns the underlying Pebble metrics.
+func (d *Dedup) Metrics() *pebble.Metrics {
+	return d.pebble.Metrics()
+}
+
 // Close closes the Pebble database.
 func (d *Dedup) Close() error {
 	return d.pebble.Close()

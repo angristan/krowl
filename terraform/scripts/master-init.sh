@@ -3,6 +3,16 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+# --- DNS fix: bypass systemd-resolved ---
+# systemd-resolved can crash under heavy DNS load; use public resolvers directly
+systemctl disable --now systemd-resolved || true
+rm -f /etc/resolv.conf
+cat >/etc/resolv.conf <<'DNS'
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+DNS
+chattr +i /etc/resolv.conf # prevent overwrite by DHCP/networkd
+
 # --- System setup ---
 apt-get update -qq
 apt-get install -y -qq curl gnupg lsb-release unzip jq
@@ -70,6 +80,52 @@ REDIS
 systemctl restart redis-server
 systemctl enable redis-server
 
+# --- Node exporter ---
+curl -fsSL https://github.com/prometheus/node_exporter/releases/download/v1.10.2/node_exporter-1.10.2.linux-amd64.tar.gz |
+	tar xzf - -C /tmp/
+cp /tmp/node_exporter-1.10.2.linux-amd64/node_exporter /usr/local/bin/
+rm -rf /tmp/node_exporter-*
+
+useradd --system --no-create-home --shell /bin/false node_exporter || true
+cat >/etc/systemd/system/node_exporter.service <<'UNIT'
+[Unit]
+Description=Node Exporter
+After=network-online.target
+
+[Service]
+User=node_exporter
+ExecStart=/usr/local/bin/node_exporter
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl enable node_exporter
+systemctl start node_exporter
+
+# --- Redis exporter ---
+curl -fsSL https://github.com/oliver006/redis_exporter/releases/download/v1.81.0/redis_exporter-v1.81.0.linux-amd64.tar.gz |
+	tar xzf - -C /tmp/
+cp /tmp/redis_exporter-v1.81.0.linux-amd64/redis_exporter /usr/local/bin/
+rm -rf /tmp/redis_exporter-*
+
+cat >/etc/systemd/system/redis_exporter.service <<'UNIT'
+[Unit]
+Description=Redis Exporter
+After=redis-server.service
+
+[Service]
+ExecStart=/usr/local/bin/redis_exporter --redis.addr=redis://localhost:6379
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl enable redis_exporter
+systemctl start redis_exporter
+
 # --- Prometheus ---
 useradd --system --no-create-home --shell /bin/false prometheus
 mkdir -p /etc/prometheus /var/lib/prometheus
@@ -105,10 +161,20 @@ scrape_configs:
         regex: .*,metrics,.*
         action: keep
 
-  - job_name: 'redis'
+  - job_name: 'redis-exporter'
     consul_sd_configs:
       - server: 'localhost:8500'
-        services: ['redis']
+        services: ['redis-exporter']
+
+  - job_name: 'node-exporter'
+    consul_sd_configs:
+      - server: 'localhost:8500'
+        services: ['node-exporter']
+
+  - job_name: 'juicefs'
+    consul_sd_configs:
+      - server: 'localhost:8500'
+        services: ['juicefs']
 PROM
 
 cat >/etc/systemd/system/prometheus.service <<'UNIT'
@@ -210,6 +276,26 @@ services {
   check {
     http     = "http://localhost:3000/api/health"
     interval = "10s"
+    timeout  = "2s"
+  }
+}
+
+services {
+  name = "node-exporter"
+  port = 9100
+  check {
+    http     = "http://localhost:9100/metrics"
+    interval = "15s"
+    timeout  = "2s"
+  }
+}
+
+services {
+  name = "redis-exporter"
+  port = 9121
+  check {
+    http     = "http://localhost:9121/metrics"
+    interval = "15s"
     timeout  = "2s"
   }
 }

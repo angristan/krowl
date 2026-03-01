@@ -25,10 +25,10 @@ import (
 var errNonRetryable = errors.New("non-retryable")
 
 const (
-	FetchTimeout = 30 * time.Second
+	FetchTimeout = 10 * time.Second
 	MaxBodySize  = 1 * 1024 * 1024 // 1MB
 	MaxRedirects = 5
-	MaxRetries   = 2 // retry transient errors up to this many times
+	MaxRetries   = 1 // retry transient errors once
 
 	// Connection pool tuning
 	maxIdleConns        = 1000 // total idle connections across all hosts
@@ -313,9 +313,14 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	}
 	defer resp.Body.Close()
 
-	// Count redirects (difference between original and final URL)
-	if resp.Request != nil && resp.Request.URL.String() != rawURL {
-		redirectCount = len(resp.Request.Response.Header) // rough proxy; use via if needed
+	// Count redirects by walking the response chain
+	if resp.Request != nil {
+		for r := resp.Request; r.Response != nil; r = r.Response.Request {
+			redirectCount++
+			if r.Response.Request == nil {
+				break
+			}
+		}
 	}
 	_ = gotFirstByte // used in trace callback
 
