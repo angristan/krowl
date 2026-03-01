@@ -12,7 +12,7 @@ curl -fsSL https://tailscale.com/install.sh | sh
 tailscale up --auth-key="${tailscale_auth_key}" --advertise-tags=tag:krowl --hostname=krowl-master --ssh
 
 # --- Consul ---
-curl -fsSL https://releases.hashicorp.com/consul/1.20.0/consul_1.20.0_linux_amd64.zip -o /tmp/consul.zip
+curl -fsSL https://releases.hashicorp.com/consul/1.20.5/consul_1.20.5_linux_amd64.zip -o /tmp/consul.zip
 unzip /tmp/consul.zip -d /usr/local/bin/
 rm /tmp/consul.zip
 useradd --system --home /etc/consul.d --shell /bin/false consul
@@ -74,9 +74,9 @@ systemctl enable redis-server
 useradd --system --no-create-home --shell /bin/false prometheus
 mkdir -p /etc/prometheus /var/lib/prometheus
 
-curl -fsSL https://github.com/prometheus/prometheus/releases/download/v2.53.0/prometheus-2.53.0.linux-amd64.tar.gz |
+curl -fsSL https://github.com/prometheus/prometheus/releases/download/v3.10.0/prometheus-3.10.0.linux-amd64.tar.gz |
 	tar xzf - -C /tmp/
-cp /tmp/prometheus-2.53.0.linux-amd64/{prometheus,promtool} /usr/local/bin/
+cp /tmp/prometheus-3.10.0.linux-amd64/{prometheus,promtool} /usr/local/bin/
 rm -rf /tmp/prometheus-*
 
 # Install alert rules

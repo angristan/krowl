@@ -15,8 +15,8 @@ resource "digitalocean_droplet" "worker" {
     master_private_ip  = digitalocean_droplet.master.ipv4_address_private
     spaces_bucket      = digitalocean_spaces_bucket.krowl.name
     spaces_region      = var.region
-    spaces_access_key  = var.spaces_access_key
-    spaces_secret_key  = var.spaces_secret_key
+    spaces_access_key  = var.spaces_worker_access_key
+    spaces_secret_key  = var.spaces_worker_secret_key
   })
 
   tags = ["krowl", "worker"]
