@@ -119,6 +119,13 @@ systemctl start juicefs
 
 # --- Prepare local data directories ---
 mkdir -p /var/data/pebble
+# Ensure shared WARC and seeds dirs exist on JuiceFS
+# (JuiceFS mount is async, so wait for it to be ready)
+for i in $(seq 1 30); do
+	mountpoint -q /mnt/jfs && break
+	sleep 1
+done
+mkdir -p /mnt/jfs/warcs /mnt/jfs/seeds
 
 # --- Register services in Consul ---
 cat >/etc/consul.d/crawler.hcl <<EOF
@@ -172,7 +179,8 @@ ExecStart=/usr/local/bin/crawler \
   --redis=localhost:6379 \
   --consul=localhost:8500 \
   --metrics-port=9090 \
-  --warc-dir=/mnt/jfs/warcs
+  --warc-dir=/mnt/jfs/warcs \
+  --checkpoint=/var/data/frontier.ckpt
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
