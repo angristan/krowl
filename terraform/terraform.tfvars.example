@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and fill in values
+
+do_token              = "dop_v1_..."
+tailscale_auth_key    = "tskey-auth-..."   # Generate at https://login.tailscale.com/admin/settings/keys (reusable, ephemeral)
+ssh_key_fingerprint   = "aa:bb:cc:..."     # doctl compute ssh-key list
+spaces_access_key     = "DO..."
+spaces_secret_key     = "..."
+consul_encrypt_key    = "..."              # Generate with: consul keygen
+
+region       = "fra1"
+worker_count = 3
+master_size  = "s-2vcpu-4gb"
+worker_size  = "c-4vcpu-8gb"
