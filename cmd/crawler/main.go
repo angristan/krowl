@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/stanislas/krowl/internal/checkpoint"
 	"github.com/stanislas/krowl/internal/dedup"
 	"github.com/stanislas/krowl/internal/domain"
 	"github.com/stanislas/krowl/internal/fetch"
@@ -39,15 +40,17 @@ func init() {
 
 func main() {
 	var (
-		standalone   = flag.Bool("standalone", false, "Single-node mode: skip Consul and Redis")
-		nodeID       = flag.Int("node-id", 0, "This node's ID")
-		seedFile     = flag.String("seeds", "/mnt/jfs/seeds/top10k.txt", "Path to seed domains file")
-		pebblePath   = flag.String("pebble", "/var/data/pebble", "Path to Pebble database")
-		redisAddr    = flag.String("redis", "localhost:6379", "Local Redis address")
-		consulAddr   = flag.String("consul", "localhost:8500", "Consul agent address")
-		metricsPort  = flag.Int("metrics-port", 9090, "Prometheus metrics port")
-		expectedURLs = flag.Int("expected-urls", 50_000_000, "Expected total URLs for bloom filter sizing")
-		warcDir      = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
+		standalone     = flag.Bool("standalone", false, "Single-node mode: skip Consul and Redis")
+		nodeID         = flag.Int("node-id", 0, "This node's ID")
+		seedFile       = flag.String("seeds", "/mnt/jfs/seeds/top10k.txt", "Path to seed domains file")
+		pebblePath     = flag.String("pebble", "/var/data/pebble", "Path to Pebble database")
+		redisAddr      = flag.String("redis", "localhost:6379", "Local Redis address")
+		consulAddr     = flag.String("consul", "localhost:8500", "Consul agent address")
+		metricsPort    = flag.Int("metrics-port", 9090, "Prometheus metrics port")
+		expectedURLs   = flag.Int("expected-urls", 50_000_000, "Expected total URLs for bloom filter sizing")
+		warcDir        = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
+		checkpointPath = flag.String("checkpoint", "/var/data/frontier.ckpt", "Path for frontier checkpoint file")
+		checkpointSec  = flag.Int("checkpoint-interval", 30, "Seconds between periodic frontier checkpoints (0 to disable)")
 	)
 	flag.Parse()
 
@@ -140,6 +143,14 @@ func main() {
 		}
 	}()
 
+	// Restore frontier from checkpoint (if any)
+	ckptQueues, err := checkpoint.Load(*checkpointPath)
+	if err != nil {
+		slog.Warn("failed to load checkpoint, starting fresh", "error", err)
+	} else if len(ckptQueues) > 0 {
+		dm.RestoreQueues(ckptQueues)
+	}
+
 	// Load seed domains for this node
 	loadSeeds(*seedFile, hashRing, *nodeID, dm)
 
@@ -173,6 +184,11 @@ func main() {
 
 	// Metrics + health server
 	go serveHTTP(*metricsPort)
+
+	// Periodic frontier checkpoint
+	if *checkpointSec > 0 {
+		go periodicCheckpoint(ctx, dm, *checkpointPath, time.Duration(*checkpointSec)*time.Second)
+	}
 
 	// Distributed-only goroutines
 	if !*standalone {
@@ -230,6 +246,11 @@ func main() {
 	// Wait for WARC writer to flush remaining records
 	slog.Info("flushing WARC writer")
 	warcWg.Wait()
+
+	// Final frontier checkpoint
+	if err := checkpoint.Save(*checkpointPath, dm.Snapshot()); err != nil {
+		slog.Error("failed to save final checkpoint", "error", err)
+	}
 
 	slog.Info("krowl shutdown complete")
 }
@@ -353,6 +374,22 @@ func serveHTTP(port int) {
 	slog.Info("HTTP server starting", "port", port, "endpoints", "/metrics, /health")
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), mux); err != nil {
 		slog.Error("HTTP server error", "error", err)
+	}
+}
+
+// periodicCheckpoint saves the frontier to disk at regular intervals.
+func periodicCheckpoint(ctx context.Context, dm *domain.Manager, path string, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := checkpoint.Save(path, dm.Snapshot()); err != nil {
+				slog.Error("periodic checkpoint failed", "error", err)
+			}
+		}
 	}
 }
 
