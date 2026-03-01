@@ -126,6 +126,8 @@ func (p *Pool) processResult(ctx context.Context, result fetch.Result) {
 	forwarded := 0
 	enqueued := 0
 
+	childDepth := result.Depth + 1
+
 	for _, link := range links {
 		if !p.dedup.IsNew(link) {
 			deduped++
@@ -136,10 +138,10 @@ func (p *Pool) processResult(ctx context.Context, result fetch.Result) {
 		owner := p.ring.Owner(d)
 
 		if owner == p.myID {
-			p.domains.Enqueue(d, link)
+			p.domains.Enqueue(d, link, childDepth)
 			enqueued++
 		} else {
-			if err := p.sender.Forward(ctx, link); err != nil {
+			if err := p.sender.Forward(ctx, link, childDepth); err != nil {
 				// Peer unavailable, skip
 				continue
 			}
@@ -225,5 +227,9 @@ func resolveLink(base *url.URL, href string) string {
 		return ""
 	}
 
-	return urlnorm.Normalize(resolved.String())
+	normalized := urlnorm.Normalize(resolved.String())
+	if len(normalized) > domain.MaxURLLength {
+		return ""
+	}
+	return normalized
 }

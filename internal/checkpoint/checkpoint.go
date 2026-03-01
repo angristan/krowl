@@ -1,7 +1,7 @@
 // Package checkpoint persists and restores the crawler frontier
 // (per-domain URL queues) so that a restart doesn't lose queued work.
 //
-// Format: gob-encoded map[string][]string (domain → URLs).
+// Format: gob-encoded map[string][]domain.QueueItem (domain → items).
 // Writes are atomic: encode to a temp file, then rename.
 package checkpoint
 
@@ -12,10 +12,12 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/stanislas/krowl/internal/domain"
 )
 
 // Save atomically writes the frontier queues to path.
-func Save(path string, queues map[string][]string) error {
+func Save(path string, queues map[string][]domain.QueueItem) error {
 	start := time.Now()
 
 	dir := filepath.Dir(path)
@@ -53,8 +55,8 @@ func Save(path string, queues map[string][]string) error {
 
 	// Count total URLs for logging
 	total := 0
-	for _, urls := range queues {
-		total += len(urls)
+	for _, items := range queues {
+		total += len(items)
 	}
 
 	slog.Info("checkpoint saved",
@@ -68,24 +70,24 @@ func Save(path string, queues map[string][]string) error {
 
 // Load reads a frontier checkpoint from path.
 // Returns an empty map (not an error) if the file does not exist.
-func Load(path string) (map[string][]string, error) {
+func Load(path string) (map[string][]domain.QueueItem, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return make(map[string][]string), nil
+			return make(map[string][]domain.QueueItem), nil
 		}
 		return nil, fmt.Errorf("checkpoint: open: %w", err)
 	}
 	defer f.Close()
 
-	var queues map[string][]string
+	var queues map[string][]domain.QueueItem
 	if err := gob.NewDecoder(f).Decode(&queues); err != nil {
 		return nil, fmt.Errorf("checkpoint: decode: %w", err)
 	}
 
 	total := 0
-	for _, urls := range queues {
-		total += len(urls)
+	for _, items := range queues {
+		total += len(items)
 	}
 	slog.Info("checkpoint loaded",
 		"path", path,

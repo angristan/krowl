@@ -22,7 +22,12 @@ const (
 	MaxCrawlDelay      = 30 * time.Second       // ceiling: give up sooner rather than crawling glacially
 	RobotsExpiry       = 24 * time.Hour
 	RobotsMaxSize      = 512 * 1024 // 512KB
-	MaxConsecutiveErrs = 10
+	MaxConsecutiveErrs = 10         // start exponential backoff after this many
+	MaxConsecutiveDead = 30         // permanently give up on a domain after this many
+
+	MaxQueuePerDomain = 50000 // cap URLs queued per domain (prevents crawler traps)
+	MaxURLLength      = 2048  // reject URLs longer than this
+	MaxCrawlDepth     = 25    // maximum hops from a seed URL
 
 	// Adaptive rate: delay = max(MinCrawlDelay, latency * multiplier)
 	// A 200ms response -> 1s delay. A 2s response -> 10s delay.
@@ -49,8 +54,17 @@ type State struct {
 	// Sitemap
 	SitemapChecked bool // true once we've attempted to fetch the sitemap
 
+	// Permanent failure: domain exceeded MaxConsecutiveDead errors
+	Dead bool
+
 	// Frontier: URLs to crawl for this domain
-	Queue []string
+	Queue []QueueItem
+}
+
+// QueueItem is a URL with its crawl depth (hops from a seed URL).
+type QueueItem struct {
+	URL   string
+	Depth int
 }
 
 // Manager manages per-domain state. All methods are thread-safe.
@@ -100,15 +114,24 @@ func (m *Manager) GetOrCreate(domain string) *State {
 
 // Enqueue adds a URL to a domain's frontier. If a frontier heap is
 // attached, the domain is pushed into it so fetchers can find it.
-func (m *Manager) Enqueue(domain, rawURL string) {
+// Silently drops URLs that are too long, too deep, from dead domains,
+// or when the per-domain queue is at capacity.
+func (m *Manager) Enqueue(domain, rawURL string, depth int) {
+	if len(rawURL) > MaxURLLength || depth > MaxCrawlDepth {
+		return
+	}
 	m.mu.Lock()
 	s, ok := m.domains[domain]
 	if !ok {
 		s = &State{CrawlDelay: DefaultCrawlDelay}
 		m.domains[domain] = s
 	}
+	if s.Dead || len(s.Queue) >= MaxQueuePerDomain {
+		m.mu.Unlock()
+		return
+	}
 	wasEmpty := len(s.Queue) == 0
-	s.Queue = append(s.Queue, rawURL)
+	s.Queue = append(s.Queue, QueueItem{URL: rawURL, Depth: depth})
 	fr := m.frontier // capture under lock
 	m.mu.Unlock()
 
@@ -121,17 +144,17 @@ func (m *Manager) Enqueue(domain, rawURL string) {
 }
 
 // Dequeue pops the next URL from a domain's frontier.
-// Returns empty string if the queue is empty.
-func (m *Manager) Dequeue(domain string) string {
+// Returns the item and true, or a zero item and false if empty.
+func (m *Manager) Dequeue(domain string) (QueueItem, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.domains[domain]
 	if !ok || len(s.Queue) == 0 {
-		return ""
+		return QueueItem{}, false
 	}
-	url := s.Queue[0]
+	item := s.Queue[0]
 	s.Queue = s.Queue[1:]
-	return url
+	return item, true
 }
 
 // QueueLen returns the number of URLs in a domain's frontier.
@@ -253,16 +276,33 @@ func (m *Manager) RecordFetch(domain string, latency time.Duration) {
 
 // RecordError records a fetch error for a domain.
 // Applies exponential backoff after repeated failures.
+// After MaxConsecutiveDead errors the domain is permanently abandoned.
 func (m *Manager) RecordError(domain string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.getOrCreateLocked(domain)
 	s.ConsecutiveErrors++
+	if s.ConsecutiveErrors >= MaxConsecutiveDead {
+		s.Dead = true
+		s.Queue = nil // free memory
+		return
+	}
 	if s.ConsecutiveErrors >= MaxConsecutiveErrs {
 		// Back off exponentially, capped at 1 hour
 		backoff := time.Duration(1<<min(s.ConsecutiveErrors-MaxConsecutiveErrs, 6)) * time.Minute
 		s.BackoffUntil = time.Now().Add(backoff)
 	}
+}
+
+// IsDead returns true if a domain has been permanently abandoned due
+// to too many consecutive errors.
+func (m *Manager) IsDead(domain string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s, ok := m.domains[domain]; ok {
+		return s.Dead
+	}
+	return false
 }
 
 // ActiveDomains returns all domains that have URLs in their queue.
@@ -300,7 +340,7 @@ func (m *Manager) DiscoverSitemap(d string) {
 	// Fetch sitemap (network I/O, don't hold lock)
 	urls := m.sitemap.FetchURLs(d, hints)
 	for _, u := range urls {
-		m.Enqueue(d, u)
+		m.Enqueue(d, u, 0) // sitemap URLs are seeds (depth 0)
 	}
 }
 
@@ -344,13 +384,13 @@ func (m *Manager) TotalQueueLen() int {
 
 // Snapshot returns a copy of all non-empty domain queues.
 // Used by checkpoint to persist the frontier.
-func (m *Manager) Snapshot() map[string][]string {
+func (m *Manager) Snapshot() map[string][]QueueItem {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make(map[string][]string)
+	out := make(map[string][]QueueItem)
 	for domain, s := range m.domains {
 		if len(s.Queue) > 0 {
-			cp := make([]string, len(s.Queue))
+			cp := make([]QueueItem, len(s.Queue))
 			copy(cp, s.Queue)
 			out[domain] = cp
 		}
@@ -358,12 +398,12 @@ func (m *Manager) Snapshot() map[string][]string {
 	return out
 }
 
-// RestoreQueues bulk-enqueues URLs from a checkpoint.
+// RestoreQueues bulk-enqueues items from a checkpoint.
 // Should be called at startup before any fetchers begin.
-func (m *Manager) RestoreQueues(queues map[string][]string) {
-	for domain, urls := range queues {
-		for _, u := range urls {
-			m.Enqueue(domain, u)
+func (m *Manager) RestoreQueues(queues map[string][]QueueItem) {
+	for d, items := range queues {
+		for _, item := range items {
+			m.Enqueue(d, item.URL, item.Depth)
 		}
 	}
 }

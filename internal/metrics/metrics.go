@@ -47,6 +47,18 @@ var (
 		Help: "Fetch errors by category",
 	}, []string{"reason"})
 
+	// Fetch retries (transient errors that were retried)
+	FetchRetries = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: ns, Name: "fetch_retries_total",
+		Help: "Transient fetch errors that triggered a retry",
+	})
+
+	// Domains permanently abandoned
+	DomainsDead = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: ns, Name: "domains_dead_total",
+		Help: "Domains permanently abandoned after too many consecutive errors",
+	})
+
 	// Total response time (from request start to body read)
 	FetchDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: ns, Name: "fetch_duration_seconds",
@@ -276,7 +288,7 @@ var (
 func Register() {
 	// Fetch / HTTP
 	prometheus.MustRegister(
-		PagesFetched, FetchErrors, FetchDuration,
+		PagesFetched, FetchErrors, FetchRetries, DomainsDead, FetchDuration,
 		DNSDuration, ConnectDuration, TLSDuration, TTFBDuration,
 		ResponseSize, ContentTypes, RedirectsFollowed, RobotsBlocked,
 	)

@@ -4,7 +4,10 @@ package inbox
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -66,8 +69,9 @@ func (s *Sender) UpdatePeers(nodes []ring.Node) {
 }
 
 // Forward sends a URL to the owning node's inbox.
-// The URL has already passed local dedup.
-func (s *Sender) Forward(ctx context.Context, rawURL string) error {
+// The URL has already passed local dedup. The depth is encoded in the
+// wire format as "depth\turl".
+func (s *Sender) Forward(ctx context.Context, rawURL string, depth int) error {
 	d := domain.ExtractDomain(rawURL)
 	owner := s.ring.Owner(d)
 
@@ -80,7 +84,8 @@ func (s *Sender) Forward(ctx context.Context, rawURL string) error {
 		return nil // node not available, skip
 	}
 
-	err := client.LPush(ctx, inboxKey, rawURL).Err()
+	wire := fmt.Sprintf("%d\t%s", depth, rawURL)
+	err := client.LPush(ctx, inboxKey, wire).Err()
 	if err != nil {
 		m.InboxForwardErrors.Inc()
 		return err
@@ -135,13 +140,26 @@ func (c *Consumer) Run(ctx context.Context) {
 			}
 		}
 
-		for _, rawURL := range urls {
+		for _, wire := range urls {
+			rawURL, depth := decodeWire(wire)
 			if c.dedup.IsNew(rawURL) {
 				d := domain.ExtractDomain(rawURL)
-				c.domains.Enqueue(d, rawURL)
+				c.domains.Enqueue(d, rawURL, depth)
 			}
 		}
 
 		slog.Debug("inbox batch processed", "count", len(urls))
 	}
+}
+
+// decodeWire parses the "depth\turl" wire format.
+// Falls back to depth 0 for plain URL strings (backward compat).
+func decodeWire(wire string) (string, int) {
+	if idx := strings.IndexByte(wire, '\t'); idx > 0 {
+		depth, err := strconv.Atoi(wire[:idx])
+		if err == nil {
+			return wire[idx+1:], depth
+		}
+	}
+	return wire, 0
 }

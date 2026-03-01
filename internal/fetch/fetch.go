@@ -6,6 +6,7 @@ package fetch
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,10 +21,14 @@ import (
 	m "github.com/stanislas/krowl/internal/metrics"
 )
 
+// errNonRetryable wraps errors that should not be retried (non-HTML, bad request, etc.)
+var errNonRetryable = errors.New("non-retryable")
+
 const (
 	FetchTimeout = 30 * time.Second
 	MaxBodySize  = 1 * 1024 * 1024 // 1MB
 	MaxRedirects = 5
+	MaxRetries   = 2 // retry transient errors up to this many times
 
 	// Connection pool tuning
 	maxIdleConns        = 1000 // total idle connections across all hosts
@@ -42,6 +47,7 @@ const (
 type Result struct {
 	URL            string
 	Domain         string
+	Depth          int // crawl depth (hops from seed)
 	Body           []byte
 	Status         int
 	Headers        http.Header
@@ -158,9 +164,15 @@ func (p *Pool) fetchLoop(ctx context.Context, id int) {
 		}
 
 		// Dequeue a URL from this domain's queue
-		rawURL := p.domains.Dequeue(d)
-		if rawURL == "" {
+		item, ok := p.domains.Dequeue(d)
+		if !ok {
 			// Domain was in frontier but queue drained (race). Don't re-push.
+			continue
+		}
+		rawURL := item.URL
+
+		// Skip dead domains (permanently abandoned after too many errors)
+		if p.domains.IsDead(d) {
 			continue
 		}
 
@@ -175,17 +187,22 @@ func (p *Pool) fetchLoop(ctx context.Context, id int) {
 			continue
 		}
 
-		// Fetch with latency measurement
+		// Fetch with retries on transient errors
 		fetchStart := time.Now()
-		result, err := p.fetch(ctx, rawURL, d)
+		result, err := p.fetchWithRetry(ctx, rawURL, d)
 		latency := time.Since(fetchStart)
 		if err != nil {
 			p.domains.RecordFetch(d, latency)
 			p.domains.RecordError(d)
+			if p.domains.IsDead(d) {
+				m.DomainsDead.Inc()
+			}
 			p.repushIfNeeded(d)
 			continue
 		}
 		p.domains.RecordFetch(d, latency)
+
+		result.Depth = item.Depth
 
 		select {
 		case p.results <- *result:
@@ -206,6 +223,33 @@ func (p *Pool) repushIfNeeded(d string) {
 	}
 }
 
+// fetchWithRetry wraps fetch with retry logic for transient errors
+// (network timeouts, DNS failures, connection resets).
+// Non-retryable errors (non-HTML, request build failures) fail immediately.
+func (p *Pool) fetchWithRetry(ctx context.Context, rawURL, d string) (*Result, error) {
+	var lastErr error
+	for attempt := 0; attempt <= MaxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * 500 * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			m.FetchRetries.Inc()
+		}
+		result, err := p.fetch(ctx, rawURL, d)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if errors.Is(err, errNonRetryable) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
 func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, FetchTimeout)
 	defer cancel()
@@ -213,7 +257,7 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		m.FetchErrors.WithLabelValues("request_build").Inc()
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errNonRetryable, err)
 	}
 	req.Header.Set("User-Agent", p.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
@@ -286,7 +330,7 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	// Only process HTML responses
 	if !strings.Contains(ct, "text/html") && !strings.Contains(ct, "application/xhtml") {
 		m.FetchErrors.WithLabelValues("non_html").Inc()
-		return nil, fmt.Errorf("non-html content type: %s", ct)
+		return nil, fmt.Errorf("%w: non-html content type: %s", errNonRetryable, ct)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodySize))
