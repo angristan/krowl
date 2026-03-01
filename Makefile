@@ -37,15 +37,15 @@ seeds/top10k.txt:
 	mkdir -p seeds
 	curl -s https://tranco-list.eu/top-1m.csv.zip | funzip | head -10000 | cut -d',' -f2 > seeds/top10k.txt
 
-# --- Terraform ---
+# --- OpenTofu ---
 tf-init:
-	cd terraform && terraform init
+	cd terraform && tofu init
 
 tf-plan:
-	cd terraform && terraform plan
+	cd terraform && tofu plan
 
 tf-apply:
-	cd terraform && terraform apply
+	cd terraform && tofu apply
 
 tf-destroy:
-	cd terraform && terraform destroy
+	cd terraform && tofu destroy

@@ -27,7 +27,7 @@ curl -fsSL https://tailscale.com/install.sh | sh
 tailscale up --auth-key="${tailscale_auth_key}" --advertise-tags=tag:krowl --hostname=krowl-worker-${node_id} --ssh
 
 # --- Consul agent ---
-curl -fsSL https://releases.hashicorp.com/consul/1.20.0/consul_1.20.0_linux_amd64.zip -o /tmp/consul.zip
+curl -fsSL https://releases.hashicorp.com/consul/1.20.5/consul_1.20.5_linux_amd64.zip -o /tmp/consul.zip
 unzip /tmp/consul.zip -d /usr/local/bin/
 rm /tmp/consul.zip
 useradd --system --home /etc/consul.d --shell /bin/false consul
@@ -80,7 +80,7 @@ systemctl restart redis-server
 systemctl enable redis-server
 
 # --- JuiceFS ---
-curl -fsSL https://github.com/juicedata/juicefs/releases/download/v1.2.0/juicefs-1.2.0-linux-amd64.tar.gz |
+curl -fsSL https://github.com/juicedata/juicefs/releases/download/v1.3.1/juicefs-1.3.1-linux-amd64.tar.gz |
 	tar xzf - -C /usr/local/bin/ juicefs
 
 # Format JuiceFS (idempotent, only first run actually formats)

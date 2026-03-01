@@ -31,7 +31,7 @@ variable "master_size" {
 variable "worker_size" {
   description = "Droplet size for worker nodes"
   type        = string
-  default     = "c-4vcpu-8gb"
+  default     = "s-4vcpu-8gb-amd"
 }
 
 variable "ssh_key_fingerprint" {
@@ -40,13 +40,25 @@ variable "ssh_key_fingerprint" {
 }
 
 variable "spaces_access_key" {
-  description = "DigitalOcean Spaces access key (for JuiceFS S3 backend)"
+  description = "DigitalOcean Spaces access key (full-access, for Terraform provider)"
   type        = string
   sensitive   = true
 }
 
 variable "spaces_secret_key" {
-  description = "DigitalOcean Spaces secret key"
+  description = "DigitalOcean Spaces secret key (full-access, for Terraform provider)"
+  type        = string
+  sensitive   = true
+}
+
+variable "spaces_worker_access_key" {
+  description = "DigitalOcean Spaces access key (scoped to krowl-data bucket, for JuiceFS)"
+  type        = string
+  sensitive   = true
+}
+
+variable "spaces_worker_secret_key" {
+  description = "DigitalOcean Spaces secret key (scoped to krowl-data bucket, for JuiceFS)"
   type        = string
   sensitive   = true
 }
