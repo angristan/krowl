@@ -1,0 +1,159 @@
+groups:
+  - name: krowl
+    rules:
+
+      # --- Crawl health ---
+
+      - alert: CrawlStalled
+        expr: sum(rate(krowl_pages_fetched_total[5m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No pages fetched in the last 5 minutes"
+          description: "The crawl has stalled. Check frontier starvation, DNS failures, or all workers being blocked."
+
+      - alert: HighFetchErrorRate
+        expr: >
+          sum(rate(krowl_fetch_errors_total[5m]))
+          / sum(rate(krowl_pages_fetched_total[5m]))
+          > 0.25
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fetch error rate above 25%"
+          description: "{{ $value | humanizePercentage }} of fetches are failing. Check error reasons in the dashboard."
+
+      - alert: FrontierStarvation
+        expr: sum(krowl_frontier_size) == 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Frontier is empty"
+          description: "No URLs queued. The crawl will stop unless new seeds or sitemaps are discovered."
+
+      # --- Dedup ---
+
+      - alert: BloomSaturation
+        expr: >
+          sum(rate(krowl_dedup_bloom_false_positives_total[10m]))
+          / sum(rate(krowl_dedup_bloom_hits_total[10m]))
+          > 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bloom filter false positive rate above 15%"
+          description: "The bloom filter is saturating ({{ $value | humanizePercentage }} FP rate). Consider increasing --expected-urls or restarting to rebuild."
+
+      - alert: BloomSaturationCritical
+        expr: >
+          sum(rate(krowl_dedup_bloom_false_positives_total[10m]))
+          / sum(rate(krowl_dedup_bloom_hits_total[10m]))
+          > 0.30
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Bloom filter FP rate above 30% - dedup is degraded"
+          description: "Every Pebble lookup is now an SSD read. Restart nodes with a larger --expected-urls."
+
+      # --- HTTP latency ---
+
+      - alert: HighFetchLatencyP95
+        expr: >
+          histogram_quantile(0.95,
+            sum by (le) (rate(krowl_fetch_duration_seconds_bucket[5m]))
+          ) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 fetch latency above 10 seconds"
+          description: "Slow responses are backing up the pipeline. p95 = {{ $value | humanizeDuration }}."
+
+      - alert: HighTLSLatencyP95
+        expr: >
+          histogram_quantile(0.95,
+            sum by (le) (rate(krowl_tls_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 TLS handshake above 2 seconds"
+          description: "TLS handshakes are slow. This consumes disproportionate CPU in crawlers."
+
+      # --- WARC ---
+
+      - alert: WARCWriteErrors
+        expr: sum(rate(krowl_warc_write_errors_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "WARC write errors detected"
+          description: "Crawled data is being lost. Check disk space (JuiceFS mount) and write permissions."
+
+      # --- Inbox (distributed mode) ---
+
+      - alert: InboxForwardErrors
+        expr: sum(rate(krowl_inbox_forward_errors_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cross-shard inbox forwarding errors"
+          description: "URLs are failing to forward to peer nodes. Check Redis connectivity between workers."
+
+      - alert: InboxQueueBacklog
+        expr: krowl_inbox_queue_size > 100000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inbox queue backlog above 100K"
+          description: "Instance {{ $labels.instance }} has {{ $value }} URLs queued in its inbox. Consumer may be too slow."
+
+      # --- Infrastructure ---
+
+      - alert: NodeDown
+        expr: up{job="crawler"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Crawler node {{ $labels.instance }} is down"
+          description: "Prometheus cannot scrape this node. Check systemd unit and network."
+
+      - alert: HighMemory
+        expr: process_resident_memory_bytes{job="crawler"} > 3.5e9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Crawler using > 3.5GB RAM"
+          description: "Instance {{ $labels.instance }} using {{ $value | humanize1024 }}B. Risk of OOM on 4GB droplets."
+
+      - alert: HighGoroutineCount
+        expr: go_goroutines{job="crawler"} > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Goroutine count above 10,000"
+          description: "Instance {{ $labels.instance }} has {{ $value }} goroutines. Possible leak."
+
+      - alert: HighOpenFDs
+        expr: >
+          process_open_fds{job="crawler"}
+          / process_max_fds{job="crawler"}
+          > 0.80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "File descriptor usage above 80%"
+          description: "Instance {{ $labels.instance }} using {{ $value | humanizePercentage }} of max FDs."
