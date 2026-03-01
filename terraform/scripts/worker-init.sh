@@ -156,4 +156,38 @@ EOF
 
 consul reload || true
 
+# --- Crawler systemd unit ---
+cat >/etc/systemd/system/crawler.service <<EOF
+[Unit]
+Description=krowl Crawler
+After=network-online.target consul.service redis-server.service juicefs.service
+Wants=network-online.target
+Requires=consul.service redis-server.service juicefs.service
+
+[Service]
+ExecStart=/usr/local/bin/crawler \
+  --node-id=${node_id} \
+  --seeds=/mnt/jfs/seeds/top10k.txt \
+  --pebble=/var/data/pebble \
+  --redis=localhost:6379 \
+  --consul=localhost:8500 \
+  --metrics-port=9090 \
+  --warc-dir=/mnt/jfs/warcs
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+KillSignal=SIGTERM
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable crawler
+# Don't start crawler yet - binary needs to be deployed first
+# systemctl start crawler
+
 echo "=== krowl worker ${node_id} init complete ==="
