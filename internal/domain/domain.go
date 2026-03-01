@@ -342,6 +342,32 @@ func (m *Manager) TotalQueueLen() int {
 	return total
 }
 
+// Snapshot returns a copy of all non-empty domain queues.
+// Used by checkpoint to persist the frontier.
+func (m *Manager) Snapshot() map[string][]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string][]string)
+	for domain, s := range m.domains {
+		if len(s.Queue) > 0 {
+			cp := make([]string, len(s.Queue))
+			copy(cp, s.Queue)
+			out[domain] = cp
+		}
+	}
+	return out
+}
+
+// RestoreQueues bulk-enqueues URLs from a checkpoint.
+// Should be called at startup before any fetchers begin.
+func (m *Manager) RestoreQueues(queues map[string][]string) {
+	for domain, urls := range queues {
+		for _, u := range urls {
+			m.Enqueue(domain, u)
+		}
+	}
+}
+
 func (m *Manager) getOrCreateLocked(domain string) *State {
 	s, ok := m.domains[domain]
 	if !ok {
