@@ -55,5 +55,5 @@ The main operational dashboard with the following rows:
 The dashboard is provisioned from `/var/lib/grafana/dashboards/` on the master node. Grafana auto-reloads every 30 seconds.
 
 ```
-scp grafana/dashboards/krowl.json krowl-master:/var/lib/grafana/dashboards/krowl.json
+scp monitoring/grafana/dashboards/krowl.json krowl-master:/var/lib/grafana/dashboards/krowl.json
 ```
