@@ -123,6 +123,15 @@ func main() {
 	}
 	defer dd.Close()
 
+	// Warm bloom filter from Pebble so it's authoritative before crawling starts.
+	warmStart := time.Now()
+	nWarmed, err := dd.WarmBloom()
+	if err != nil {
+		slog.Error("failed to warm bloom filter", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("bloom filter warmed from Pebble", "urls", nWarmed, "duration", time.Since(warmStart))
+
 	// Domain manager
 	dm := domain.NewManager(userAgent, *maxFrontier)
 

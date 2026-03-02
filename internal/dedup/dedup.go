@@ -1,7 +1,8 @@
-// Package dedup implements two-tier URL deduplication:
-//
-//	Tier 0: in-memory bloom filter (fast reject, no false negatives)
-//	Tier 1: local Pebble on SSD (exact, persistent)
+// Package dedup implements URL deduplication with a bloom filter backed
+// by Pebble for persistence. On startup, all Pebble keys are loaded into
+// the bloom filter. During crawling, the bloom filter handles all lookups
+// (zero false negatives) and Pebble is write-only (new URLs persisted for
+// restart recovery).
 package dedup
 
 import (
@@ -39,38 +40,37 @@ func New(pebblePath string, expectedURLs int) (*Dedup, error) {
 	}, nil
 }
 
+// WarmBloom scans all Pebble keys into the bloom filter.
+// Must be called before crawling starts so bloom is authoritative.
+func (d *Dedup) WarmBloom() (int, error) {
+	iter, err := d.pebble.NewIter(nil)
+	if err != nil {
+		return 0, err
+	}
+	defer iter.Close()
+
+	n := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		d.bloom.Add(iter.Key())
+		n++
+	}
+	return n, iter.Error()
+}
+
 // IsNew returns true if the URL has not been seen before on this node.
-// If the URL is new, it is automatically marked as seen in both tiers.
+// If the URL is new, it is automatically marked as seen in both bloom
+// (for fast future lookups) and Pebble (for persistence across restarts).
+// Bloom is trusted fully — no Pebble reads during crawling.
 func (d *Dedup) IsNew(rawURL string) bool {
 	m.DedupLookups.Inc()
 	key := urlKey(rawURL)
 
-	// Tier 0: bloom filter - fast reject
 	if d.bloom.Test(key) {
 		m.DedupBloomHits.Inc()
-		// Probably seen. Verify with Pebble.
-		_, closer, err := d.pebble.Get(key)
-		if err == nil {
-			closer.Close()
-			m.DedupPebbleHits.Inc()
-			return false // definitely seen
-		}
-		// Bloom false positive: not in Pebble, so it's actually new.
-		m.DedupBloomFalsePositives.Inc()
-	} else {
-		// Definitely not in bloom, but still check Pebble
-		// (bloom is lost on restart, Pebble persists)
-		_, closer, err := d.pebble.Get(key)
-		if err == nil {
-			closer.Close()
-			// In Pebble but not in bloom (post-restart). Warm bloom.
-			m.DedupPebbleHits.Inc()
-			d.bloom.Add(key)
-			return false
-		}
+		return false
 	}
 
-	// New URL. Mark in both tiers.
+	// New URL. Mark in both bloom + Pebble.
 	m.DedupNewURLs.Inc()
 	d.bloom.Add(key)
 	_ = d.pebble.Set(key, []byte("1"), pebble.NoSync)
