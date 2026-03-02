@@ -708,51 +708,6 @@
     },
     {
       "type": "heatmap",
-      "title": "DNS Duration Heatmap",
-      "id": 257,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 14
-      },
-      "targets": [
-        {
-          "expr": "sum(increase(krowl_dns_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])) by (le)",
-          "legendFormat": "{{le}}",
-          "refId": "A",
-          "format": "heatmap"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {
-        "calculate": false,
-        "yAxis": {
-          "unit": "s"
-        },
-        "color": {
-          "mode": "scheme",
-          "scheme": "Oranges",
-          "steps": 128
-        },
-        "cellGap": 1,
-        "tooltip": {
-          "show": true
-        },
-        "legend": {
-          "show": false
-        }
-      }
-    },
-    {
-      "type": "heatmap",
       "title": "DNS Phase Heatmap",
       "id": 264,
       "datasource": {
