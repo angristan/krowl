@@ -2870,8 +2870,8 @@
     },
     {
       "type": "timeseries",
-      "title": "System Load Average",
-      "id": 291,
+      "title": "System Load",
+      "id": 296,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2897,16 +2897,60 @@
           "expr": "node_load15",
           "legendFormat": "15m {{instance}}",
           "refId": "C"
+        },
+        {
+          "expr": "count(count(node_cpu_seconds_total) by (cpu, instance)) by (instance)",
+          "legendFormat": "CPU Cores {{instance}}",
+          "refId": "D"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "custom": {
-            "fillOpacity": 10
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*CPU Cores.*/"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "dark-red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "tooltip": {
@@ -2917,6 +2961,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
+            "min",
             "mean",
             "max"
           ]
@@ -2925,8 +2970,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Memory Usage",
-      "id": 292,
+      "title": "Memory Basic",
+      "id": 297,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2937,44 +2982,135 @@
         "x": 8,
         "y": 153
       },
+      "description": "RAM and swap usage overview, including caches",
       "targets": [
         {
-          "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
-          "legendFormat": "Used {{instance}}",
+          "expr": "node_memory_MemTotal_bytes",
+          "legendFormat": "Total {{instance}}",
           "refId": "A"
         },
         {
-          "expr": "node_memory_Buffers_bytes",
-          "legendFormat": "Buffers {{instance}}",
+          "expr": "node_memory_MemTotal_bytes - node_memory_MemFree_bytes - (node_memory_Cached_bytes + node_memory_Buffers_bytes + node_memory_SReclaimable_bytes)",
+          "legendFormat": "Used {{instance}}",
           "refId": "B"
         },
         {
-          "expr": "node_memory_Cached_bytes",
-          "legendFormat": "Cached {{instance}}",
+          "expr": "node_memory_Cached_bytes + node_memory_Buffers_bytes + node_memory_SReclaimable_bytes",
+          "legendFormat": "Cache + Buffer {{instance}}",
           "refId": "C"
+        },
+        {
+          "expr": "node_memory_MemFree_bytes",
+          "legendFormat": "Free {{instance}}",
+          "refId": "D"
+        },
+        {
+          "expr": "(node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes)",
+          "legendFormat": "Swap Used {{instance}}",
+          "refId": "E"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "decbytes",
+          "unit": "bytes",
+          "min": 0,
           "custom": {
-            "fillOpacity": 10,
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "showPoints": "never",
+            "spanNulls": false,
             "stacking": {
+              "group": "A",
               "mode": "normal"
             }
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*Swap Used.*/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#BF1B00",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*Total.*/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#E0F9D7",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": false,
+                  "mode": "normal"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*Cache \\+ Buffer.*/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#052B51",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*Free.*/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#7EB26D",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "tooltip": {
           "mode": "multi",
-          "sort": "desc"
+          "sort": "none"
         },
         "legend": {
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
+            "min",
             "mean",
             "max"
           ]
@@ -2983,8 +3119,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Page Faults",
-      "id": 293,
+      "title": "Memory Page Faults",
+      "id": 298,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -2997,24 +3133,75 @@
       },
       "targets": [
         {
-          "expr": "rate(node_vmstat_pgfault[$__rate_interval])",
-          "legendFormat": "Minor {{instance}}",
+          "expr": "irate(node_vmstat_pgfault[$__rate_interval])",
+          "legendFormat": "Total {{instance}}",
           "refId": "A"
         },
         {
-          "expr": "rate(node_vmstat_pgmajfault[$__rate_interval])",
+          "expr": "irate(node_vmstat_pgmajfault[$__rate_interval])",
           "legendFormat": "Major {{instance}}",
           "refId": "B"
+        },
+        {
+          "expr": "irate(node_vmstat_pgfault[$__rate_interval]) - irate(node_vmstat_pgmajfault[$__rate_interval])",
+          "legendFormat": "Minor {{instance}}",
+          "refId": "C"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "ops",
           "custom": {
-            "fillOpacity": 10
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*Total.*/"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": false,
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "dark-red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "tooltip": {
@@ -3025,6 +3212,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
+            "min",
             "mean",
             "max"
           ]
