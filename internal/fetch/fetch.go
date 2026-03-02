@@ -112,12 +112,10 @@ func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, u
 		MaxIdleConnsPerHost: maxIdleConnsPerHost,
 		IdleConnTimeout:     idleConnTimeout,
 		TLSHandshakeTimeout: tlsHandshakeTimeout,
-		DisableCompression:  true, // we want raw content for WARC
 		ForceAttemptHTTP2:   true, // negotiate HTTP/2 via ALPN
 	}
 
 	quicTransport := &http3.Transport{
-		DisableCompression: true,
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS13, // QUIC requires TLS 1.3
 		},
