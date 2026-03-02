@@ -711,12 +711,12 @@
       },
       "targets": [
         {
-          "expr": "rate(node_network_receive_bytes_total{device=\"eth0\"}[$__rate_interval]) * 8 / 1e6",
+          "expr": "rate(node_network_receive_bytes_total{device=\"eth0\",instance!~\".*0\\.6.*\"}[$__rate_interval]) * 8 / 1e6",
           "legendFormat": "rx {{instance}}",
           "refId": "A"
         },
         {
-          "expr": "rate(node_network_transmit_bytes_total{device=\"eth0\"}[$__rate_interval]) * 8 / 1e6",
+          "expr": "rate(node_network_transmit_bytes_total{device=\"eth0\",instance!~\".*0\\.6.*\"}[$__rate_interval]) * 8 / 1e6",
           "legendFormat": "tx {{instance}}",
           "refId": "B"
         }
