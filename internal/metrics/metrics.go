@@ -119,27 +119,30 @@ var (
 		Namespace: ns, Name: "robots_blocked_total",
 		Help: "URLs blocked by robots.txt",
 	})
-)
 
-// ---- DNS cache ----
+	// HTTP protocol version
+	HTTPVersion = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "http_version_total",
+		Help: "HTTP protocol version of responses",
+	}, []string{"version"})
 
-var (
-	DNSCacheHits = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: ns, Name: "dns_cache_hits_total",
-		Help: "DNS cache hits",
-	})
-	DNSCacheMisses = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: ns, Name: "dns_cache_misses_total",
-		Help: "DNS cache misses",
-	})
-	DNSCacheSize = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: ns, Name: "dns_cache_size",
-		Help: "Current DNS cache entries",
-	})
-	DNSCacheEvictions = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: ns, Name: "dns_cache_evictions_total",
-		Help: "DNS cache full evictions",
-	})
+	// URL scheme (http vs https)
+	URLScheme = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "url_scheme_total",
+		Help: "URL scheme of fetched pages",
+	}, []string{"scheme"})
+
+	// TLS version
+	TLSVersion = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "tls_version_total",
+		Help: "TLS version negotiated",
+	}, []string{"version"})
+
+	// TLS cipher suite
+	TLSCipher = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "tls_cipher_total",
+		Help: "TLS cipher suite negotiated",
+	}, []string{"cipher"})
 )
 
 // ---- Parse / Links ----
@@ -357,10 +360,8 @@ func Register() {
 		PagesFetched, FetchErrors, FetchRetries, DomainsDead, FetchDuration,
 		DNSDuration, ConnectDuration, TLSDuration, TTFBDuration,
 		ResponseSize, ContentTypes, RedirectsFollowed, RobotsBlocked,
+		HTTPVersion, URLScheme, TLSVersion, TLSCipher,
 	)
-
-	// DNS cache
-	prometheus.MustRegister(DNSCacheHits, DNSCacheMisses, DNSCacheSize, DNSCacheEvictions)
 
 	// Parse / links
 	prometheus.MustRegister(

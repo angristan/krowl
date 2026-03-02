@@ -37,10 +37,6 @@ const (
 	tlsHandshakeTimeout = 10 * time.Second
 	dialTimeout         = 10 * time.Second
 	dialKeepAlive       = 30 * time.Second
-
-	// DNS cache tuning
-	dnsCacheTTL  = 5 * time.Minute
-	dnsCacheSize = 50000
 )
 
 // Result is the output of a successful fetch, sent to parsers.
@@ -66,36 +62,14 @@ type Pool struct {
 	workers   int
 }
 
-// NewPool creates a fetcher pool with connection pooling and DNS caching.
+// NewPool creates a fetcher pool with connection pooling.
+// DNS caching is handled by CoreDNS on localhost.
 func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, userAgent string, workers int) *Pool {
-	dnsCache := newDNSCache(dnsCacheSize, dnsCacheTTL)
-
-	dialer := &net.Dialer{
-		Timeout:   dialTimeout,
-		KeepAlive: dialKeepAlive,
-	}
-
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return dialer.DialContext(ctx, network, addr)
-			}
-			// Check DNS cache
-			if ip, ok := dnsCache.get(host); ok {
-				return dialer.DialContext(ctx, network, net.JoinHostPort(ip, port))
-			}
-			// Resolve and cache
-			ips, err := net.DefaultResolver.LookupHost(ctx, host)
-			if err != nil {
-				return nil, err
-			}
-			if len(ips) > 0 {
-				dnsCache.put(host, ips[0])
-				return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
-			}
-			return dialer.DialContext(ctx, network, addr)
-		},
+		DialContext: (&net.Dialer{
+			Timeout:   dialTimeout,
+			KeepAlive: dialKeepAlive,
+		}).DialContext,
 		MaxIdleConns:        maxIdleConns,
 		MaxIdleConnsPerHost: maxIdleConnsPerHost,
 		IdleConnTimeout:     idleConnTimeout,
@@ -327,6 +301,20 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	// Record status
 	m.PagesFetched.WithLabelValues(m.StatusBucket(resp.StatusCode)).Inc()
 
+	// HTTP protocol version
+	m.HTTPVersion.WithLabelValues(resp.Proto).Inc()
+
+	// URL scheme (http vs https)
+	m.URLScheme.WithLabelValues(req.URL.Scheme).Inc()
+
+	// TLS version and cipher suite
+	if resp.TLS != nil {
+		m.TLSVersion.WithLabelValues(tlsVersionName(resp.TLS.Version)).Inc()
+		m.TLSCipher.WithLabelValues(tls.CipherSuiteName(resp.TLS.CipherSuite)).Inc()
+	} else {
+		m.TLSVersion.WithLabelValues("none").Inc()
+	}
+
 	// Content type tracking
 	ct := resp.Header.Get("Content-Type")
 	ctShort := shortContentType(ct)
@@ -390,51 +378,18 @@ func extractPath(rawURL string) string {
 	return rest[idx:]
 }
 
-// --- DNS cache ---
-
-type dnsCacheEntry struct {
-	ip      string
-	expires time.Time
-}
-
-type dnsCache struct {
-	mu      sync.RWMutex
-	entries map[string]dnsCacheEntry
-	maxSize int
-	ttl     time.Duration
-}
-
-func newDNSCache(maxSize int, ttl time.Duration) *dnsCache {
-	return &dnsCache{
-		entries: make(map[string]dnsCacheEntry, maxSize),
-		maxSize: maxSize,
-		ttl:     ttl,
+// tlsVersionName maps TLS version constants to human-readable strings.
+func tlsVersionName(v uint16) string {
+	switch v {
+	case tls.VersionTLS10:
+		return "TLS 1.0"
+	case tls.VersionTLS11:
+		return "TLS 1.1"
+	case tls.VersionTLS12:
+		return "TLS 1.2"
+	case tls.VersionTLS13:
+		return "TLS 1.3"
+	default:
+		return "unknown"
 	}
-}
-
-func (c *dnsCache) get(host string) (string, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	e, ok := c.entries[host]
-	if !ok || time.Now().After(e.expires) {
-		m.DNSCacheMisses.Inc()
-		return "", false
-	}
-	m.DNSCacheHits.Inc()
-	return e.ip, true
-}
-
-func (c *dnsCache) put(host, ip string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// Simple eviction: if at capacity, clear the whole cache.
-	if len(c.entries) >= c.maxSize {
-		c.entries = make(map[string]dnsCacheEntry, c.maxSize)
-		m.DNSCacheEvictions.Inc()
-	}
-	c.entries[host] = dnsCacheEntry{
-		ip:      ip,
-		expires: time.Now().Add(c.ttl),
-	}
-	m.DNSCacheSize.Set(float64(len(c.entries)))
 }
