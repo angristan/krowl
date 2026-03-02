@@ -3,17 +3,62 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-# --- DNS fix: bypass systemd-resolved ---
-# systemd-resolved can crash under heavy DNS load; use public resolvers directly
+# --- CoreDNS: local caching resolver with Prometheus metrics ---
+# systemd-resolved can crash under heavy DNS load; replace with CoreDNS
 systemctl disable --now systemd-resolved || true
+
+curl -fsSL https://github.com/coredns/coredns/releases/download/v1.14.1/coredns_1.14.1_linux_amd64.tgz |
+	tar xzf - -C /usr/local/bin/ coredns
+
+useradd --system --no-create-home --shell /bin/false coredns || true
+
+mkdir -p /etc/coredns
+cat >/etc/coredns/Corefile <<'COREFILE'
+. {
+    forward . 8.8.8.8 1.1.1.1 2001:4860:4860::8888 2606:4700:4700::1111 {
+        health_check 30s
+    }
+    cache {
+        success 65536 3600 300
+        denial 8192 600 60
+        prefetch 10 1h 10%
+    }
+    prometheus 0.0.0.0:9153
+    errors
+    log . {
+        class denial error
+    }
+    ready
+}
+COREFILE
+
+cat >/etc/systemd/system/coredns.service <<'UNIT'
+[Unit]
+Description=CoreDNS DNS Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=coredns
+ExecStart=/usr/local/bin/coredns -conf /etc/coredns/Corefile
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl enable coredns
+systemctl start coredns
+
+# Point resolv.conf to local CoreDNS
 rm -f /etc/resolv.conf
 cat >/etc/resolv.conf <<'DNS'
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-nameserver 2001:4860:4860::8888
-nameserver 2606:4700:4700::1111
+nameserver 127.0.0.1
 DNS
-chattr +i /etc/resolv.conf # prevent overwrite by DHCP/networkd
+chattr +i /etc/resolv.conf
 
 # --- System setup ---
 apt-get update -qq
@@ -96,7 +141,9 @@ After=network-online.target
 
 [Service]
 User=node_exporter
-ExecStart=/usr/local/bin/node_exporter
+ExecStart=/usr/local/bin/node_exporter \
+  --collector.tcpstat \
+  --collector.conntrack
 Restart=always
 
 [Install]
@@ -177,6 +224,11 @@ scrape_configs:
     consul_sd_configs:
       - server: 'localhost:8500'
         services: ['juicefs']
+
+  - job_name: 'coredns'
+    consul_sd_configs:
+      - server: 'localhost:8500'
+        services: ['coredns']
 PROM
 
 cat >/etc/systemd/system/prometheus.service <<'UNIT'
@@ -297,6 +349,16 @@ services {
   port = 9121
   check {
     http     = "http://localhost:9121/metrics"
+    interval = "15s"
+    timeout  = "2s"
+  }
+}
+
+services {
+  name = "coredns"
+  port = 9153
+  check {
+    http     = "http://localhost:9153/metrics"
     interval = "15s"
     timeout  = "2s"
   }
