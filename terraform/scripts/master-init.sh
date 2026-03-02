@@ -198,6 +198,8 @@ scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+        labels:
+          instance: krowl-master
 
   - job_name: 'crawler'
     consul_sd_configs:
@@ -209,26 +211,40 @@ scrape_configs:
       - source_labels: [__meta_consul_tags]
         regex: .*,metrics,.*
         action: keep
+      - source_labels: [__meta_consul_node]
+        target_label: instance
 
   - job_name: 'redis-exporter'
     consul_sd_configs:
       - server: 'localhost:8500'
         services: ['redis-exporter']
+    relabel_configs:
+      - source_labels: [__meta_consul_node]
+        target_label: instance
 
   - job_name: 'node-exporter'
     consul_sd_configs:
       - server: 'localhost:8500'
         services: ['node-exporter']
+    relabel_configs:
+      - source_labels: [__meta_consul_node]
+        target_label: instance
 
   - job_name: 'juicefs'
     consul_sd_configs:
       - server: 'localhost:8500'
         services: ['juicefs']
+    relabel_configs:
+      - source_labels: [__meta_consul_node]
+        target_label: instance
 
   - job_name: 'coredns'
     consul_sd_configs:
       - server: 'localhost:8500'
         services: ['coredns']
+    relabel_configs:
+      - source_labels: [__meta_consul_node]
+        target_label: instance
 PROM
 
 cat >/etc/systemd/system/prometheus.service <<'UNIT'
