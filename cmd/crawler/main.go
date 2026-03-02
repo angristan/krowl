@@ -135,7 +135,7 @@ func main() {
 		if err != nil {
 			slog.Warn("pyroscope failed to start", "error", err)
 		} else {
-			defer p.Stop()
+			defer func() { _ = p.Stop() }()
 			slog.Info("pyroscope profiling enabled", "server", *pyroscopeAddr)
 		}
 	}
@@ -160,7 +160,7 @@ func main() {
 		slog.Error("failed to open dedup", "error", err)
 		os.Exit(1)
 	}
-	defer dd.Close()
+	defer func() { _ = dd.Close() }()
 
 	// Warm bloom filter from Pebble so it's authoritative before crawling starts.
 	warmStart := time.Now()
@@ -224,7 +224,7 @@ func main() {
 			sender.Close()
 		}
 		if rdb != nil {
-			rdb.Close()
+			_ = rdb.Close()
 		}
 	}()
 
@@ -497,7 +497,7 @@ func loadSeeds(path string, hashRing *ring.Ring, myID int, dm *domain.Manager) {
 		slog.Error("failed to open seeds", "error", err, "path", path)
 		os.Exit(1)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	count := 0
@@ -575,7 +575,7 @@ func serveHTTP(port int) {
 	mux.Handle("/debug/pprof/allocs", http.DefaultServeMux)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "ok")
+		_, _ = fmt.Fprintln(w, "ok")
 	})
 	slog.Info("HTTP server starting", "port", port, "endpoints", "/metrics, /health")
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), mux); err != nil {

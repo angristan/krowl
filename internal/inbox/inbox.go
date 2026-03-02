@@ -62,7 +62,7 @@ func (s *Sender) UpdatePeers(nodes []ring.Node) {
 	// Close removed peers
 	for id, client := range s.peers {
 		if _, ok := newPeers[id]; !ok {
-			client.Close()
+			_ = client.Close()
 		}
 	}
 	s.peers = newPeers
@@ -97,7 +97,7 @@ func (s *Sender) Forward(ctx context.Context, rawURL string, depth int) error {
 // Close closes all peer connections.
 func (s *Sender) Close() {
 	for _, client := range s.peers {
-		client.Close()
+		_ = client.Close()
 	}
 }
 

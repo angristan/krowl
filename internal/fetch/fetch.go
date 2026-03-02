@@ -275,7 +275,7 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 		m.FetchErrors.WithLabelValues("network").Inc()
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// TLS version and cipher suite.
 	// gowarc uses utls and wraps connections, so resp.TLS is always nil.

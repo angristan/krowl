@@ -31,8 +31,8 @@ func Save(path string, queues map[string][]domain.QueueItem) error {
 	ok := false
 	defer func() {
 		if !ok {
-			tmp.Close()
-			os.Remove(tmpName)
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
 		}
 	}()
 
@@ -78,7 +78,7 @@ func Load(path string) (map[string][]domain.QueueItem, error) {
 		}
 		return nil, fmt.Errorf("checkpoint: open: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var queues map[string][]domain.QueueItem
 	if err := gob.NewDecoder(f).Decode(&queues); err != nil {

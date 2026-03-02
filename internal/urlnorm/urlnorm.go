@@ -57,9 +57,7 @@ func Normalize(rawURL string) string {
 	}
 
 	// Strip www. prefix
-	if strings.HasPrefix(u.Host, "www.") {
-		u.Host = u.Host[4:]
-	}
+	u.Host = strings.TrimPrefix(u.Host, "www.")
 
 	// Normalize path: decode unnecessary percent-encoding, remove trailing slash
 	p := u.Path
@@ -137,8 +135,6 @@ func NormalizeDomain(rawURL string) string {
 		return ""
 	}
 	host := strings.ToLower(u.Hostname())
-	if strings.HasPrefix(host, "www.") {
-		host = host[4:]
-	}
+	host = strings.TrimPrefix(host, "www.")
 	return host
 }

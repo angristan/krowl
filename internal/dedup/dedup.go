@@ -47,7 +47,7 @@ func (d *Dedup) WarmBloom() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	n := 0
 	for iter.First(); iter.Valid(); iter.Next() {
