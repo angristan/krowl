@@ -50,7 +50,7 @@ Per-domain crawl state management: robots.txt caching, adaptive rate limiting, e
 | `MinCrawlDelay` | 250ms | Floor for adaptive delay |
 | `MaxCrawlDelay` | 30s | Ceiling for adaptive delay |
 | `AdaptiveMultiplier` | 5 | Delay = latency * 5 |
-| `MaxQueuePerDomain` | 10K | Per-domain URL queue cap |
+| `MaxQueuePerDomain` | 1K | Per-domain URL queue cap (forces domain diversity) |
 | `DefaultMaxFrontier` | 2M | Global URL queue cap (backpressure) |
 | `MaxURLLength` | 2048 | Reject URLs longer than this |
 | `MaxCrawlDepth` | 25 | Maximum hops from seed |

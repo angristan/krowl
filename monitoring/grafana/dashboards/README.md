@@ -1,4 +1,4 @@
-# grafana/dashboards
+# monitoring/grafana/dashboards
 
 Grafana dashboard definitions provisioned to the master node.
 
@@ -14,7 +14,7 @@ Grafana dashboard definitions provisioned to the master node.
   ├──────────────┤                 │  all targets │              │         │
   │redis_exporter│◄────────────────│              │              │         │
   │  :9121       │                 │  alerts.yml  │              │         │
-  ├──────────────┤                 │  (14 rules)  │              │         │
+  ├──────────────┤                 │  (17 rules)  │              │         │
   │  JuiceFS     │◄────────────────│              │              │         │
   │  :9567       │                 └──────────────┘              └─────────┘
   └──────────────┘                    master node                 master node
@@ -34,7 +34,7 @@ The main operational dashboard with the following rows:
 | **URL Pipeline** | Flow rates (discovered, deduped, enqueued, forwarded), robots/dedup/sitemaps |
 | **Dedup Internals** | Operations breakdown, bloom filter false positive rate |
 | **DNS Cache** | Hit ratio, cache size, evictions |
-| **WARC Storage** | Throughput, records/rotations, file size |
+| **WARC Storage** | Write throughput (from gowarc DataTotal), cumulative data written, in-flight writers & errors |
 | **Inbox Cross-Shard** | Forward/receive rate, queue depth, batch size |
 | **Frontier & Crawl Status** | Frontier size, domain counts |
 | **Go Runtime** | Goroutines, heap usage, GC pauses |

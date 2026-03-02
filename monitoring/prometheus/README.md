@@ -8,7 +8,7 @@ Prometheus alerting rules for the krowl crawler cluster.
   Crawler metrics         Prometheus              Alert evaluation
   ┌────────────┐         ┌───────────┐           ┌───────────────┐
   │krowl_*     │──scrape─►│           │──evaluate─►│ alerts.yml   │
-  │node_*      │  15s     │  TSDB     │  15s      │ (14 rules)   │
+  │node_*      │  15s     │  TSDB     │  15s      │ (17 rules)   │
   │redis_*     │         │  7d ret.  │           │              │
   │juicefs_*   │         │           │           │ CrawlStalled │
   └────────────┘         └───────────┘           │ HighErrors   │
@@ -24,7 +24,7 @@ Prometheus alerting rules for the krowl crawler cluster.
 
 ## alerts.yml
 
-14 alerting rules across the following categories:
+17 alerting rules across the following categories:
 
 ### Crawl health
 - **CrawlStalled** — No pages fetched in 5 minutes
@@ -52,11 +52,16 @@ Prometheus alerting rules for the krowl crawler cluster.
 - **HighGoroutineCount** — More than 10K goroutines
 - **HighOpenFDs** — File descriptor usage > 80%
 
+### CoreDNS
+- **CoreDNSDown** — CoreDNS process not running
+- **CoreDNSHighLatency** — DNS resolution latency too high
+- **CoreDNSLowCacheHitRate** — DNS cache hit rate below threshold
+
 ## Deployment
 
 The alerts file is base64-encoded into the master cloud-init script and written to `/etc/prometheus/alerts.yml` on provisioning. To update manually:
 
 ```
-scp prometheus/alerts.yml krowl-master:/etc/prometheus/alerts.yml
+scp monitoring/prometheus/alerts.yml krowl-master:/etc/prometheus/alerts.yml
 ssh krowl-master "kill -HUP \$(pgrep prometheus)"
 ```
