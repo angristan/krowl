@@ -10,6 +10,8 @@ rm -f /etc/resolv.conf
 cat >/etc/resolv.conf <<'DNS'
 nameserver 8.8.8.8
 nameserver 1.1.1.1
+nameserver 2001:4860:4860::8888
+nameserver 2606:4700:4700::1111
 DNS
 chattr +i /etc/resolv.conf # prevent overwrite by DHCP/networkd
 

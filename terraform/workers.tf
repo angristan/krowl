@@ -7,6 +7,7 @@ resource "digitalocean_droplet" "worker" {
   region   = var.region
   vpc_uuid = digitalocean_vpc.krowl.id
   ssh_keys = [var.ssh_key_fingerprint]
+  ipv6     = true
 
   user_data = templatefile("${path.module}/scripts/worker-init.sh", {
     node_id            = count.index
