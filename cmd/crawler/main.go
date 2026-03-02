@@ -56,6 +56,7 @@ func main() {
 		checkpointSec  = flag.Int("checkpoint-interval", 30, "Seconds between periodic frontier checkpoints (0 to disable)")
 		fetchWorkersF  = flag.Int("fetch-workers", 100, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF  = flag.Int("parse-workers", 0, "Number of parser goroutines (0 = NumCPU)")
+		warcWritersF   = flag.Int("warc-writers", 4, "Number of concurrent WARC writer goroutines")
 		maxFrontier    = flag.Int("max-frontier", domain.DefaultMaxFrontier, "Global cap on total queued URLs (backpressure)")
 		memLimitPct    = flag.Int("mem-limit-pct", 70, "GOMEMLIMIT as percentage of cgroup/system memory (0 to disable)")
 		pyroscopeAddr  = flag.String("pyroscope", "", "Pyroscope server address (e.g. http://10.100.0.6:4040), empty to disable")
@@ -230,13 +231,17 @@ func main() {
 	// Load seed domains for this node
 	loadSeeds(*seedFile, hashRing, *nodeID, dm)
 
-	// WARC writer
-	ww, err := warcwriter.NewWriter(*warcDir, *nodeID, userAgent)
-	if err != nil {
-		slog.Error("failed to create WARC writer", "error", err)
-		os.Exit(1)
+	// WARC writers (multiple for concurrency — single writer can't keep up with fetchers)
+	warcWriters := make([]*warcwriter.Writer, *warcWritersF)
+	for i := range warcWriters {
+		ww, err := warcwriter.NewWriter(*warcDir, *nodeID, userAgent)
+		if err != nil {
+			slog.Error("failed to create WARC writer", "error", err, "index", i)
+			os.Exit(1)
+		}
+		defer ww.Close()
+		warcWriters[i] = ww
 	}
-	defer ww.Close()
 
 	// --- Worker sizing ---
 	cpus := runtime.NumCPU()
@@ -245,7 +250,7 @@ func main() {
 	if parseWorkers == 0 {
 		parseWorkers = cpus
 	}
-	slog.Info("worker pool configured", "fetch_workers", fetchWorkers, "parse_workers", parseWorkers, "cpus", cpus)
+	slog.Info("worker pool configured", "fetch_workers", fetchWorkers, "parse_workers", parseWorkers, "warc_writers", *warcWritersF, "cpus", cpus)
 
 	// Channels
 	fetchResults := make(chan fetch.Result, 10000)
@@ -286,18 +291,20 @@ func main() {
 		go reportMetrics(ctx, dm, fr, hashRing, nil, dd, fanoutResults, fetchResults, warcResults)
 	}
 
-	// WARC writer goroutine
+	// WARC writer goroutines (N readers on one channel, each with its own file)
 	var warcWg sync.WaitGroup
-	warcWg.Add(1)
-	go func() {
-		defer warcWg.Done()
-		for result := range warcResults {
-			if err := ww.WriteResult(result); err != nil {
-				slog.Warn("WARC write error", "error", err)
-				m.WARCWriteErrors.Inc()
+	for i, ww := range warcWriters {
+		warcWg.Add(1)
+		go func(id int, w *warcwriter.Writer) {
+			defer warcWg.Done()
+			for result := range warcResults {
+				if err := w.WriteResult(result); err != nil {
+					slog.Warn("WARC write error", "error", err, "writer", id)
+					m.WARCWriteErrors.Inc()
+				}
 			}
-		}
-	}()
+		}(i, ww)
+	}
 
 	// Fan-out: fetchers -> (parsers + WARC writer)
 	wg.Add(1)
