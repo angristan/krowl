@@ -13,11 +13,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	warc "github.com/internetarchive/gowarc"
@@ -28,6 +30,9 @@ import (
 
 // errNonRetryable wraps errors that should not be retried (non-HTML, bad request, etc.)
 var errNonRetryable = errors.New("non-retryable")
+
+// networkErrCount is used to sample network error logging (log every 100th).
+var networkErrCount atomic.Int64
 
 const (
 	FetchTimeout = 10 * time.Second
@@ -273,6 +278,9 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	resp, err := p.client.Do(req)
 	if err != nil {
 		m.FetchErrors.WithLabelValues("network").Inc()
+		if n := networkErrCount.Add(1); n%100 == 1 {
+			slog.Debug("fetch network error sample", "url", rawURL, "error", err)
+		}
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
