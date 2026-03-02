@@ -11,7 +11,7 @@ func TestNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 }
 
 func TestIsNew_UnseenURL(t *testing.T) {
@@ -20,7 +20,7 @@ func TestIsNew_UnseenURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	if !d.IsNew("https://example.com") {
 		t.Fatal("IsNew() returned false for a never-seen URL")
@@ -33,7 +33,7 @@ func TestIsNew_SeenURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	url := "https://example.com/page"
 	if !d.IsNew(url) {
@@ -50,7 +50,7 @@ func TestIsNew_ManyURLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	const n = 500
 	urls := make([]string, n)
@@ -79,7 +79,7 @@ func TestMarkSeen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	url := "https://example.com/marked"
 	d.MarkSeen(url)
@@ -136,7 +136,7 @@ func TestPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second New() error: %v", err)
 	}
-	defer d2.Close()
+	defer func() { _ = d2.Close() }()
 
 	n, err := d2.WarmBloom()
 	if err != nil {

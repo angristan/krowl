@@ -81,7 +81,7 @@ func (f *Fetcher) fetchSitemap(url string, depth int) []string {
 	if err != nil {
 		return nil
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	return f.streamParse(body, depth)
 }
@@ -234,13 +234,13 @@ func (f *Fetcher) fetch(url string) (io.ReadCloser, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	ct := resp.Header.Get("Content-Type")
 	if !strings.Contains(ct, "xml") && !strings.Contains(ct, "text/") {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("non-xml content type: %s", ct)
 	}
 

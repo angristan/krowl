@@ -395,17 +395,12 @@ func TestPush_ManyDomains_OrderPreserved(t *testing.T) {
 
 	// Pop all — should come out in ascending time order (largest i first since
 	// time.Duration(i) is subtracted from now, so larger i = earlier time)
-	prev := time.Time{}
 	for i := 0; i < n; i++ {
 		domain, wait := f.PopReady()
 		if domain == "" {
 			t.Fatalf("pop %d: got empty domain, wait=%v", i, wait)
 		}
-		if !prev.IsZero() {
-			// We can't directly check time from popped domain, but we can
-			// verify ordering via Peek on subsequent calls
-		}
-		_ = prev
+		_ = wait
 	}
 
 	if f.Len() != 0 {
