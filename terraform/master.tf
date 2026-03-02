@@ -5,6 +5,7 @@ resource "digitalocean_droplet" "master" {
   region   = var.region
   vpc_uuid = digitalocean_vpc.krowl.id
   ssh_keys = [var.ssh_key_fingerprint]
+  ipv6     = true
 
   user_data = templatefile("${path.module}/scripts/master-init.sh", {
     tailscale_auth_key   = var.tailscale_auth_key
