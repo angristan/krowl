@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stanislas/krowl/internal/frontier"
+	"github.com/stanislas/krowl/internal/metrics"
 	"github.com/stanislas/krowl/internal/sitemap"
 	"github.com/temoto/robotstxt"
 )
@@ -353,6 +354,9 @@ func (m *Manager) DiscoverSitemap(d string) {
 	urls := m.sitemap.FetchURLs(d, hints)
 	for _, u := range urls {
 		m.Enqueue(d, u, 0) // sitemap URLs are seeds (depth 0)
+	}
+	if len(urls) > 0 {
+		metrics.SitemapURLsDiscovered.Add(float64(len(urls)))
 	}
 }
 
