@@ -26,7 +26,7 @@ const (
 	MaxConsecutiveErrs = 10         // start exponential backoff after this many
 	MaxConsecutiveDead = 30         // permanently give up on a domain after this many
 
-	MaxQueuePerDomain  = 10000     // cap URLs queued per domain (prevents crawler traps)
+	MaxQueuePerDomain  = 1000      // cap URLs queued per domain (prevents crawler traps + forces diversity)
 	DefaultMaxFrontier = 1_000_000 // default global cap on total queued URLs
 	MaxURLLength       = 2048      // reject URLs longer than this
 	MaxCrawlDepth      = 25        // maximum hops from a seed URL

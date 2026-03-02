@@ -298,6 +298,46 @@ chown -R grafana:grafana /var/lib/grafana/dashboards
 systemctl enable grafana-server
 systemctl start grafana-server
 
+# --- Pyroscope (continuous profiling) ---
+curl -fsSL https://github.com/grafana/pyroscope/releases/download/v1.18.1/pyroscope_1.18.1_linux_amd64.tar.gz |
+	tar xzf - -C /usr/local/bin/ pyroscope
+
+mkdir -p /mnt/jfs/pyroscope
+
+cat >/etc/systemd/system/pyroscope.service <<'UNIT'
+[Unit]
+Description=Grafana Pyroscope
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/pyroscope \
+  -server.http-listen-address=0.0.0.0 \
+  -server.http-listen-port=4040 \
+  -pyroscopedb.data-path=/mnt/jfs/pyroscope
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl enable pyroscope
+systemctl start pyroscope
+
+# Provision Pyroscope datasource for Grafana
+cat >/etc/grafana/provisioning/datasources/pyroscope.yaml <<'DS'
+apiVersion: 1
+datasources:
+  - name: Pyroscope
+    type: grafana-pyroscope-datasource
+    access: proxy
+    url: http://localhost:4040
+    isDefault: false
+    editable: true
+DS
+
 # --- Register services in Consul ---
 cat >/etc/consul.d/services.hcl <<EOF
 services {
@@ -360,6 +400,16 @@ services {
   check {
     http     = "http://localhost:9153/metrics"
     interval = "15s"
+    timeout  = "2s"
+  }
+}
+
+services {
+  name = "pyroscope"
+  port = 4040
+  check {
+    http     = "http://localhost:4040/ready"
+    interval = "10s"
     timeout  = "2s"
   }
 }

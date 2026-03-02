@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"runtime"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
+	"github.com/grafana/pyroscope-go"
 	consul "github.com/hashicorp/consul/api"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
@@ -43,7 +45,7 @@ func main() {
 	var (
 		standalone     = flag.Bool("standalone", false, "Single-node mode: skip Consul and Redis")
 		nodeID         = flag.Int("node-id", 0, "This node's ID")
-		seedFile       = flag.String("seeds", "/mnt/jfs/seeds/top10k.txt", "Path to seed domains file")
+		seedFile       = flag.String("seeds", "/mnt/jfs/seeds/top100k.txt", "Path to seed domains file")
 		pebblePath     = flag.String("pebble", "/mnt/jfs/data/pebble", "Path to Pebble database")
 		redisAddr      = flag.String("redis", "localhost:6379", "Local Redis address")
 		consulAddr     = flag.String("consul", "localhost:8500", "Consul agent address")
@@ -56,6 +58,7 @@ func main() {
 		parseWorkersF  = flag.Int("parse-workers", 0, "Number of parser goroutines (0 = NumCPU)")
 		maxFrontier    = flag.Int("max-frontier", domain.DefaultMaxFrontier, "Global cap on total queued URLs (backpressure)")
 		memLimitPct    = flag.Int("mem-limit-pct", 90, "GOMEMLIMIT as percentage of cgroup/system memory (0 to disable)")
+		pyroscopeAddr  = flag.String("pyroscope", "", "Pyroscope server address (e.g. http://10.100.0.6:4040), empty to disable")
 		logLevel       = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	)
 	flag.Parse()
@@ -100,6 +103,33 @@ func main() {
 		Level: level,
 	})))
 	slog.Info("krowl starting", "mode", mode, "node", *nodeID, "seeds", *seedFile)
+
+	// Continuous profiling via Pyroscope (push mode)
+	if *pyroscopeAddr != "" {
+		p, err := pyroscope.Start(pyroscope.Config{
+			ApplicationName: "krowl",
+			ServerAddress:   *pyroscopeAddr,
+			Tags:            map[string]string{"node_id": strconv.Itoa(*nodeID)},
+			ProfileTypes: []pyroscope.ProfileType{
+				pyroscope.ProfileCPU,
+				pyroscope.ProfileAllocObjects,
+				pyroscope.ProfileAllocSpace,
+				pyroscope.ProfileInuseObjects,
+				pyroscope.ProfileInuseSpace,
+				pyroscope.ProfileGoroutines,
+				pyroscope.ProfileMutexCount,
+				pyroscope.ProfileMutexDuration,
+				pyroscope.ProfileBlockCount,
+				pyroscope.ProfileBlockDuration,
+			},
+		})
+		if err != nil {
+			slog.Warn("pyroscope failed to start", "error", err)
+		} else {
+			defer p.Stop()
+			slog.Info("pyroscope profiling enabled", "server", *pyroscopeAddr)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -455,6 +485,12 @@ func loadSeeds(path string, hashRing *ring.Ring, myID int, dm *domain.Manager) {
 func serveHTTP(port int) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	// pprof handlers (registered on DefaultServeMux by _ "net/http/pprof")
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
+	mux.Handle("/debug/pprof/profile", http.DefaultServeMux)
+	mux.Handle("/debug/pprof/heap", http.DefaultServeMux)
+	mux.Handle("/debug/pprof/goroutine", http.DefaultServeMux)
+	mux.Handle("/debug/pprof/allocs", http.DefaultServeMux)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ok")

@@ -138,6 +138,15 @@ REDIS
 systemctl restart redis-server
 systemctl enable redis-server
 
+# Allow Redis bgsave (forked child) to write RDB snapshots to JuiceFS FUSE mount.
+# The default unit has ProtectSystem=strict which makes /mnt read-only.
+mkdir -p /etc/systemd/system/redis-server.service.d
+cat >/etc/systemd/system/redis-server.service.d/juicefs.conf <<'OVERRIDE'
+[Service]
+ReadWritePaths=-/mnt/jfs/data
+OVERRIDE
+systemctl daemon-reload
+
 # --- Node exporter ---
 curl -fsSL https://github.com/prometheus/node_exporter/releases/download/v1.10.2/node_exporter-1.10.2.linux-amd64.tar.gz |
 	tar xzf - -C /tmp/
@@ -311,13 +320,14 @@ Requires=consul.service redis-server.service juicefs.service
 [Service]
 ExecStart=/usr/local/bin/crawler \
   --node-id=${node_id} \
-  --seeds=/mnt/jfs/seeds/top10k.txt \
+  --seeds=/mnt/jfs/seeds/top100k.txt \
   --pebble=/mnt/jfs/data/worker-${node_id}/pebble \
   --redis=localhost:6379 \
   --consul=localhost:8500 \
   --metrics-port=9090 \
   --warc-dir=/mnt/jfs/warcs \
-  --checkpoint=/mnt/jfs/data/worker-${node_id}/frontier.ckpt
+  --checkpoint=/mnt/jfs/data/worker-${node_id}/frontier.ckpt \
+  --pyroscope=http://${master_private_ip}:4040
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
