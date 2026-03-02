@@ -27,7 +27,7 @@ const (
 	MaxConsecutiveDead = 30         // permanently give up on a domain after this many
 
 	MaxQueuePerDomain  = 10000     // cap URLs queued per domain (prevents crawler traps)
-	DefaultMaxFrontier = 2_000_000 // default global cap on total queued URLs (~250MB)
+	DefaultMaxFrontier = 1_000_000 // default global cap on total queued URLs
 	MaxURLLength       = 2048      // reject URLs longer than this
 	MaxCrawlDepth      = 25        // maximum hops from a seed URL
 
