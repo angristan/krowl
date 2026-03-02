@@ -32,7 +32,7 @@ import (
 	m "github.com/stanislas/krowl/internal/metrics"
 	"github.com/stanislas/krowl/internal/parse"
 	"github.com/stanislas/krowl/internal/ring"
-	warcwriter "github.com/stanislas/krowl/internal/warc"
+	"github.com/stanislas/krowl/internal/warc"
 )
 
 const userAgent = "krowl/1.0 (+https://github.com/stanislas/krowl; crawl@stanislas.blog)"
@@ -43,24 +43,26 @@ func init() {
 
 func main() {
 	var (
-		standalone     = flag.Bool("standalone", false, "Single-node mode: skip Consul and Redis")
-		nodeID         = flag.Int("node-id", 0, "This node's ID")
-		seedFile       = flag.String("seeds", "/mnt/jfs/seeds/top100k.txt", "Path to seed domains file")
-		pebblePath     = flag.String("pebble", "/mnt/jfs/data/pebble", "Path to Pebble database")
-		redisAddr      = flag.String("redis", "localhost:6379", "Local Redis address")
-		consulAddr     = flag.String("consul", "localhost:8500", "Consul agent address")
-		metricsPort    = flag.Int("metrics-port", 9090, "Prometheus metrics port")
-		expectedURLs   = flag.Int("expected-urls", 50_000_000, "Expected total URLs for bloom filter sizing")
-		warcDir        = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
-		checkpointPath = flag.String("checkpoint", "/mnt/jfs/data/frontier.ckpt", "Path for frontier checkpoint file")
-		checkpointSec  = flag.Int("checkpoint-interval", 30, "Seconds between periodic frontier checkpoints (0 to disable)")
-		fetchWorkersF  = flag.Int("fetch-workers", 100, "Number of fetcher goroutines (I/O-bound, set high)")
-		parseWorkersF  = flag.Int("parse-workers", 0, "Number of parser goroutines (0 = NumCPU)")
-		warcWritersF   = flag.Int("warc-writers", 4, "Number of concurrent WARC writer goroutines")
-		maxFrontier    = flag.Int("max-frontier", domain.DefaultMaxFrontier, "Global cap on total queued URLs (backpressure)")
-		memLimitPct    = flag.Int("mem-limit-pct", 70, "GOMEMLIMIT as percentage of cgroup/system memory (0 to disable)")
-		pyroscopeAddr  = flag.String("pyroscope", "", "Pyroscope server address (e.g. http://10.100.0.6:4040), empty to disable")
-		logLevel       = flag.String("log-level", "info", "Log level: debug, info, warn, error")
+		standalone      = flag.Bool("standalone", false, "Single-node mode: skip Consul and Redis")
+		nodeID          = flag.Int("node-id", 0, "This node's ID")
+		seedFile        = flag.String("seeds", "/mnt/jfs/seeds/top100k.txt", "Path to seed domains file")
+		pebblePath      = flag.String("pebble", "/mnt/jfs/data/pebble", "Path to Pebble database")
+		redisAddr       = flag.String("redis", "localhost:6379", "Local Redis address")
+		consulAddr      = flag.String("consul", "localhost:8500", "Consul agent address")
+		metricsPort     = flag.Int("metrics-port", 9090, "Prometheus metrics port")
+		expectedURLs    = flag.Int("expected-urls", 50_000_000, "Expected total URLs for bloom filter sizing")
+		warcDir         = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
+		checkpointPath  = flag.String("checkpoint", "/mnt/jfs/data/frontier.ckpt", "Path for frontier checkpoint file")
+		checkpointSec   = flag.Int("checkpoint-interval", 30, "Seconds between periodic frontier checkpoints (0 to disable)")
+		fetchWorkersF   = flag.Int("fetch-workers", 100, "Number of fetcher goroutines (I/O-bound, set high)")
+		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
+		parseWorkersMax = flag.Int("parse-workers-max", 16, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
+		warcWritersF    = flag.Int("warc-writers", 4, "Minimum number of WARC writer goroutines")
+		warcWritersMax  = flag.Int("warc-writers-max", 16, "Maximum WARC writers (auto-scaled based on channel backpressure)")
+		maxFrontier     = flag.Int("max-frontier", domain.DefaultMaxFrontier, "Global cap on total queued URLs (backpressure)")
+		memLimitPct     = flag.Int("mem-limit-pct", 70, "GOMEMLIMIT as percentage of cgroup/system memory (0 to disable)")
+		pyroscopeAddr   = flag.String("pyroscope", "", "Pyroscope server address (e.g. http://10.100.0.6:4040), empty to disable")
+		logLevel        = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	)
 	flag.Parse()
 
@@ -231,26 +233,27 @@ func main() {
 	// Load seed domains for this node
 	loadSeeds(*seedFile, hashRing, *nodeID, dm)
 
-	// WARC writers (multiple for concurrency — single writer can't keep up with fetchers)
-	warcWriters := make([]*warcwriter.Writer, *warcWritersF)
-	for i := range warcWriters {
-		ww, err := warcwriter.NewWriter(*warcDir, *nodeID, userAgent)
-		if err != nil {
-			slog.Error("failed to create WARC writer", "error", err, "index", i)
-			os.Exit(1)
-		}
-		defer ww.Close()
-		warcWriters[i] = ww
-	}
-
 	// --- Worker sizing ---
 	cpus := runtime.NumCPU()
 	fetchWorkers := *fetchWorkersF
-	parseWorkers := *parseWorkersF
-	if parseWorkers == 0 {
-		parseWorkers = cpus
+	parseMin := *parseWorkersF
+	if parseMin == 0 {
+		parseMin = cpus
 	}
-	slog.Info("worker pool configured", "fetch_workers", fetchWorkers, "parse_workers", parseWorkers, "warc_writers", *warcWritersF, "cpus", cpus)
+	parseMax := *parseWorkersMax
+	if parseMax < parseMin {
+		parseMax = parseMin
+	}
+	warcMin := *warcWritersF
+	warcMax := *warcWritersMax
+	if warcMax < warcMin {
+		warcMax = warcMin
+	}
+	slog.Info("worker pool configured",
+		"fetch_workers", fetchWorkers,
+		"parse_min", parseMin, "parse_max", parseMax,
+		"warc_min", warcMin, "warc_max", warcMax,
+		"cpus", cpus)
 
 	// Channels
 	fetchResults := make(chan fetch.Result, 10000)
@@ -258,7 +261,7 @@ func main() {
 	fanoutResults := make(chan fetch.Result, 10000)
 
 	// Parse pool (metrics are wired directly to the centralized metrics package)
-	parsePool := parse.NewPool(fetchResults, dd, dm, sender, hashRing, *nodeID, parseWorkers)
+	parsePool := parse.NewPool(fetchResults, dd, dm, sender, hashRing, *nodeID, parseMin)
 
 	// Fetch pool (writes to fanoutResults, which fans out to parsers + WARC)
 	fetchPool := fetch.NewPool(dm, fr, fanoutResults, userAgent, fetchWorkers)
@@ -291,28 +294,35 @@ func main() {
 		go reportMetrics(ctx, dm, fr, hashRing, nil, dd, fanoutResults, fetchResults, warcResults)
 	}
 
-	// WARC writer goroutines (N readers on one channel, each with its own file)
+	// WARC writer pool with auto-scaling based on channel backpressure.
+	// Spawns writers when warcResults fills up, stops them when it drains.
 	var warcWg sync.WaitGroup
-	for i, ww := range warcWriters {
-		warcWg.Add(1)
-		go func(id int, w *warcwriter.Writer) {
-			defer warcWg.Done()
-			for result := range warcResults {
-				if err := w.WriteResult(result); err != nil {
-					slog.Warn("WARC write error", "error", err, "writer", id)
-					m.WARCWriteErrors.Inc()
-				}
-			}
-		}(i, ww)
-	}
+	go runWARCScaler(ctx, warcResults, *warcDir, *nodeID, userAgent, warcMin, warcMax, &warcWg)
 
 	// Fan-out: fetchers -> (parsers + WARC writer)
+	// Uses select to send to whichever downstream is ready first,
+	// avoiding head-of-line blocking when one consumer is slower.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for result := range fanoutResults {
-			fetchResults <- result
-			warcResults <- result
+			sentParse, sentWarc := false, false
+			for !sentParse || !sentWarc {
+				if sentParse {
+					warcResults <- result
+					sentWarc = true
+				} else if sentWarc {
+					fetchResults <- result
+					sentParse = true
+				} else {
+					select {
+					case fetchResults <- result:
+						sentParse = true
+					case warcResults <- result:
+						sentWarc = true
+					}
+				}
+			}
 		}
 		close(fetchResults)
 		close(warcResults)
@@ -326,15 +336,19 @@ func main() {
 		close(fanoutResults)
 	}()
 
-	// Parsers (blocks until fetchResults is closed or ctx cancelled)
-	parsePool.Run(ctx)
+	// Parse worker pool with auto-scaling based on channel backpressure.
+	var parseWg sync.WaitGroup
+	go runParseScaler(ctx, parsePool, fetchResults, parseMin, parseMax, &parseWg)
+
+	// Wait for parsers to finish draining
+	parseWg.Wait()
 
 	// Wait for all goroutines to finish draining
 	slog.Info("waiting for goroutines to finish")
 	wg.Wait()
 
-	// Wait for WARC writer to flush remaining records
-	slog.Info("flushing WARC writer")
+	// Wait for WARC writers to flush remaining records
+	slog.Info("flushing WARC writers")
 	warcWg.Wait()
 
 	// Final frontier checkpoint
@@ -570,6 +584,191 @@ func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontie
 				totalKeys += int64(lm.NumFiles)
 			}
 			m.PebbleTotalKeys.Set(float64(totalKeys))
+		}
+	}
+}
+
+// runWARCScaler dynamically manages WARC writer goroutines based on channel
+// backpressure. Fetchers should always be the pipeline bottleneck, not WARC
+// writers. Scale-up is aggressive; scale-down is conservative (sustained low
+// fill for 30s before removing a writer).
+func runWARCScaler(ctx context.Context, ch chan fetch.Result, dir string, nodeID int, software string, minWriters, maxWriters int, wg *sync.WaitGroup) {
+	type writerSlot struct {
+		done chan struct{}
+	}
+
+	var (
+		slots  []writerSlot
+		nextID int
+	)
+
+	spawn := func() {
+		ww, err := warc.NewWriter(dir, nodeID, software)
+		if err != nil {
+			slog.Error("WARC scaler: failed to create writer", "error", err)
+			return
+		}
+		done := make(chan struct{})
+		id := nextID
+		nextID++
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer ww.Close()
+			for {
+				select {
+				case <-done:
+					return
+				case result, ok := <-ch:
+					if !ok {
+						return
+					}
+					if err := ww.WriteResult(result); err != nil {
+						slog.Warn("WARC write error", "error", err, "writer", id)
+						m.WARCWriteErrors.Inc()
+					}
+				}
+			}
+		}()
+		slots = append(slots, writerSlot{done: done})
+		m.WARCActiveWriters.Set(float64(len(slots)))
+		slog.Info("WARC scaler: writer started", "id", id, "active", len(slots))
+	}
+
+	shrink := func() {
+		if len(slots) <= minWriters {
+			return
+		}
+		last := slots[len(slots)-1]
+		close(last.done)
+		slots = slots[:len(slots)-1]
+		m.WARCActiveWriters.Set(float64(len(slots)))
+		slog.Info("WARC scaler: writer stopped", "active", len(slots))
+	}
+
+	// Spawn initial pool
+	for i := 0; i < minWriters; i++ {
+		spawn()
+	}
+
+	capacity := cap(ch)
+	lowTicks := 0
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Scaler exits; writers keep running until ch is closed by fan-out.
+			return
+		case <-ticker.C:
+			fill := len(ch)
+			pct := fill * 100 / capacity
+			current := len(slots)
+
+			switch {
+			case pct > 80 && current < maxWriters:
+				// Severe backpressure: spawn up to 4 at once
+				n := min(4, maxWriters-current)
+				for range n {
+					spawn()
+				}
+				lowTicks = 0
+			case pct > 50 && current < maxWriters:
+				// Moderate backpressure: spawn 1
+				spawn()
+				lowTicks = 0
+			case pct < 10 && current > minWriters:
+				lowTicks++
+				if lowTicks >= 6 { // 30s sustained low fill
+					shrink()
+					lowTicks = 0
+				}
+			default:
+				lowTicks = 0
+			}
+		}
+	}
+}
+
+// runParseScaler dynamically manages parse worker goroutines based on channel
+// backpressure. Same strategy as WARC scaler: scale up aggressively, scale
+// down conservatively.
+func runParseScaler(ctx context.Context, pool *parse.Pool, ch chan fetch.Result, minWorkers, maxWorkers int, wg *sync.WaitGroup) {
+	type workerSlot struct {
+		done chan struct{}
+	}
+
+	var (
+		slots  []workerSlot
+		nextID int
+	)
+
+	spawn := func() {
+		done := make(chan struct{})
+		id := nextID
+		nextID++
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool.Worker(ctx, done)
+		}()
+		slots = append(slots, workerSlot{done: done})
+		m.ParseActiveWorkers.Set(float64(len(slots)))
+		slog.Info("parse scaler: worker started", "id", id, "active", len(slots))
+	}
+
+	shrink := func() {
+		if len(slots) <= minWorkers {
+			return
+		}
+		last := slots[len(slots)-1]
+		close(last.done)
+		slots = slots[:len(slots)-1]
+		m.ParseActiveWorkers.Set(float64(len(slots)))
+		slog.Info("parse scaler: worker stopped", "active", len(slots))
+	}
+
+	// Spawn initial pool
+	for i := 0; i < minWorkers; i++ {
+		spawn()
+	}
+
+	capacity := cap(ch)
+	lowTicks := 0
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			fill := len(ch)
+			pct := fill * 100 / capacity
+			current := len(slots)
+
+			switch {
+			case pct > 80 && current < maxWorkers:
+				n := min(4, maxWorkers-current)
+				for range n {
+					spawn()
+				}
+				lowTicks = 0
+			case pct > 50 && current < maxWorkers:
+				spawn()
+				lowTicks = 0
+			case pct < 10 && current > minWorkers:
+				lowTicks++
+				if lowTicks >= 6 { // 30s sustained low fill
+					shrink()
+					lowTicks = 0
+				}
+			default:
+				lowTicks = 0
+			}
 		}
 	}
 }

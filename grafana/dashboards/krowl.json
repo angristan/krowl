@@ -907,6 +907,11 @@
           "expr": "krowl_chan_warc_len{instance=~\"$instance\"}",
           "legendFormat": "{{instance}} warc (fan-out\u2192WARC writer)",
           "refId": "C"
+        },
+        {
+          "expr": "krowl_warc_active_writers{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} WARC writers",
+          "refId": "D"
         }
       ],
       "fieldConfig": {
@@ -921,7 +926,54 @@
             "showPoints": "never"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/.*WARC writers/"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 32
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [10, 5]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "tooltip": {

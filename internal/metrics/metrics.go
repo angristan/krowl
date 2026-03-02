@@ -245,6 +245,10 @@ var (
 		Namespace: ns, Name: "warc_current_file_bytes",
 		Help: "Current WARC file size in bytes",
 	})
+	WARCActiveWriters = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "warc_active_writers",
+		Help: "Current number of active WARC writer goroutines",
+	})
 )
 
 // ---- Inbox ----
@@ -363,6 +367,11 @@ var (
 		Help: "Number of nodes in the hash ring",
 	})
 
+	ParseActiveWorkers = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "parse_active_workers",
+		Help: "Current number of active parse worker goroutines",
+	})
+
 	// Pipeline channel fill levels
 	ChanFanout = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: ns, Name: "chan_fanout_len",
@@ -404,7 +413,7 @@ func Register() {
 	// WARC
 	prometheus.MustRegister(
 		WARCBytesWritten, WARCRecordsWritten, WARCFileRotations,
-		WARCWriteErrors, WARCCurrentFileSize,
+		WARCWriteErrors, WARCCurrentFileSize, WARCActiveWriters,
 	)
 
 	// Inbox
@@ -429,7 +438,7 @@ func Register() {
 	// Frontier / crawl
 	prometheus.MustRegister(
 		FrontierSize, FrontierDomains, ActiveDomains,
-		TrackedDomains, TopologyNodes,
+		TrackedDomains, TopologyNodes, ParseActiveWorkers,
 	)
 
 	// Pipeline channels
