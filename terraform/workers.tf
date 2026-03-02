@@ -22,5 +22,9 @@ resource "digitalocean_droplet" "worker" {
 
   tags = ["krowl", "worker"]
 
+  lifecycle {
+    ignore_changes = [user_data, ipv6]
+  }
+
   depends_on = [digitalocean_droplet.master]
 }
