@@ -310,8 +310,18 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 				m.DNSDuration.Observe(time.Since(dnsStart).Seconds())
 			}
 		},
-		ConnectStart: func(_, _ string) {
+		ConnectStart: func(_, addr string) {
 			connectStart = time.Now()
+			// Track IPv4 vs IPv6 from the resolved address (ip:port).
+			if host, _, err := net.SplitHostPort(addr); err == nil {
+				if ip := net.ParseIP(host); ip != nil {
+					if ip.To4() != nil {
+						m.IPVersion.WithLabelValues("IPv4").Inc()
+					} else {
+						m.IPVersion.WithLabelValues("IPv6").Inc()
+					}
+				}
+			}
 		},
 		ConnectDone: func(_, _ string, err error) {
 			if !connectStart.IsZero() && err == nil {
