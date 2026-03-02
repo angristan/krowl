@@ -15,4 +15,8 @@ resource "digitalocean_droplet" "master" {
   })
 
   tags = ["krowl", "master"]
+
+  lifecycle {
+    ignore_changes = [user_data, ipv6]
+  }
 }

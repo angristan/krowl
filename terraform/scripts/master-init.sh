@@ -5,10 +5,11 @@ export DEBIAN_FRONTEND=noninteractive
 
 # --- CoreDNS: local caching resolver with Prometheus metrics ---
 # systemd-resolved can crash under heavy DNS load; replace with CoreDNS
-systemctl disable --now systemd-resolved || true
-
+# Download CoreDNS BEFORE disabling systemd-resolved (we still need DNS)
 curl -fsSL https://github.com/coredns/coredns/releases/download/v1.14.1/coredns_1.14.1_linux_amd64.tgz |
 	tar xzf - -C /usr/local/bin/ coredns
+
+systemctl disable --now systemd-resolved || true
 
 useradd --system --no-create-home --shell /bin/false coredns || true
 

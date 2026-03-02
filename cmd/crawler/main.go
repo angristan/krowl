@@ -58,7 +58,7 @@ func main() {
 		warcDir         = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
 		checkpointPath  = flag.String("checkpoint", "/mnt/jfs/data/frontier.ckpt", "Path for frontier checkpoint file")
 		checkpointSec   = flag.Int("checkpoint-interval", 30, "Seconds between periodic frontier checkpoints (0 to disable)")
-		fetchWorkersF   = flag.Int("fetch-workers", 100, "Number of fetcher goroutines (I/O-bound, set high)")
+		fetchWorkersF   = flag.Int("fetch-workers", 200, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
 		parseWorkersMax = flag.Int("parse-workers-max", 16, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
 		warcPoolSize    = flag.Int("warc-pool-size", 4, "Number of concurrent WARC writer goroutines (gowarc pool)")
