@@ -48,7 +48,8 @@ Parser goroutine pool. Extracts links from fetched HTML pages, runs dedup, and e
 ## API
 
 - `NewPool(results, dedup, dm, sender, ring, myID, workers)` — Create parser pool
-- `Run(ctx)` — Start workers; blocks until results channel closes
+- `Run(ctx)` — Start fixed workers; blocks until results channel closes
+- `Worker(ctx, done)` — Run a single parse worker until `done` is closed (used by the auto-scaler in main.go to dynamically add/remove parse workers based on channel backpressure)
 
 ## Dependencies
 
