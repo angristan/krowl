@@ -16,8 +16,8 @@ import (
 const (
 	MaxSitemapSize = 2 * 1024 * 1024 // 2MB (down from 10MB)
 	FetchTimeout   = 15 * time.Second
-	MaxURLsPerSite = 10000 // cap to avoid memory issues on huge sitemaps
-	MaxIndexDepth  = 2     // don't follow sitemap indexes more than 2 levels deep
+	MaxURLsPerSite = 1000 // match MaxQueuePerDomain; extras would be rejected by Enqueue anyway
+	MaxIndexDepth  = 2    // don't follow sitemap indexes more than 2 levels deep
 )
 
 // Fetcher fetches and parses sitemaps for domains.

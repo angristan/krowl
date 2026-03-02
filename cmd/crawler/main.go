@@ -57,7 +57,7 @@ func main() {
 		fetchWorkersF  = flag.Int("fetch-workers", 100, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF  = flag.Int("parse-workers", 0, "Number of parser goroutines (0 = NumCPU)")
 		maxFrontier    = flag.Int("max-frontier", domain.DefaultMaxFrontier, "Global cap on total queued URLs (backpressure)")
-		memLimitPct    = flag.Int("mem-limit-pct", 90, "GOMEMLIMIT as percentage of cgroup/system memory (0 to disable)")
+		memLimitPct    = flag.Int("mem-limit-pct", 70, "GOMEMLIMIT as percentage of cgroup/system memory (0 to disable)")
 		pyroscopeAddr  = flag.String("pyroscope", "", "Pyroscope server address (e.g. http://10.100.0.6:4040), empty to disable")
 		logLevel       = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	)
@@ -276,14 +276,14 @@ func main() {
 		defer deregisterConsulService(consulClient, serviceID)
 
 		go watchTopology(ctx, consulClient, hashRing, sender, *nodeID)
-		go reportMetrics(ctx, dm, fr, hashRing, rdb, dd)
+		go reportMetrics(ctx, dm, fr, hashRing, rdb, dd, fanoutResults, fetchResults, warcResults)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			consumer.Run(ctx)
 		}()
 	} else {
-		go reportMetrics(ctx, dm, fr, hashRing, nil, dd)
+		go reportMetrics(ctx, dm, fr, hashRing, nil, dd, fanoutResults, fetchResults, warcResults)
 	}
 
 	// WARC writer goroutine
@@ -518,7 +518,7 @@ func periodicCheckpoint(ctx context.Context, dm *domain.Manager, path string, in
 }
 
 // reportMetrics periodically updates gauge metrics that need polling.
-func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontier, hashRing *ring.Ring, rdb *redis.Client, dd *dedup.Dedup) {
+func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontier, hashRing *ring.Ring, rdb *redis.Client, dd *dedup.Dedup, chFanout, chParse, chWarc chan fetch.Result) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -531,6 +531,10 @@ func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontie
 			m.ActiveDomains.Set(float64(len(dm.ActiveDomains())))
 			m.TrackedDomains.Set(float64(dm.DomainCount()))
 			m.TopologyNodes.Set(float64(hashRing.NodeCount()))
+
+			m.ChanFanout.Set(float64(len(chFanout)))
+			m.ChanParse.Set(float64(len(chParse)))
+			m.ChanWarc.Set(float64(len(chWarc)))
 
 			if rdb != nil {
 				inboxLen, _ := rdb.LLen(ctx, "inbox").Result()
