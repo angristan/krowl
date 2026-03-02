@@ -109,6 +109,27 @@ func hash(s string) uint64 {
 	return h.Sum64()
 }
 
+// EnsureNode adds a node to the ring if it is not already present.
+// Used to guarantee the local node is in the ring before seed loading,
+// even if Consul's health check hasn't passed yet.
+func (r *Ring) EnsureNode(n Node) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.nodes[n.ID]; ok {
+		return // already present
+	}
+
+	r.nodes[n.ID] = n
+	for i := 0; i < r.vnodes; i++ {
+		h := hash(fmt.Sprintf("node-%d-vnode-%d", n.ID, i))
+		r.ring = append(r.ring, h)
+		r.owners[h] = n.ID
+	}
+	sort.Slice(r.ring, func(i, j int) bool { return r.ring[i] < r.ring[j] })
+	r.sorted = true
+}
+
 // HashDomain is exported so other packages use the same hash function.
 func HashDomain(domain string) uint64 {
 	return hash(domain)
