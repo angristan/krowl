@@ -120,20 +120,22 @@ func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, u
 		ForceAttemptHTTP2:   true, // negotiate HTTP/2 via ALPN
 	}
 
-	quicTransport := &http3.Transport{
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS13, // QUIC requires TLS 1.3
-		},
-	}
-
-	transport := &h3Transport{
-		tcp:  tcpTransport,
-		quic: quicTransport,
-	}
+	// HTTP/3 disabled temporarily — quic-go spawns ~13K goroutines
+	// (~100-200MB overhead) causing memory pressure on 8GB VMs.
+	// Uncomment to re-enable:
+	// quicTransport := &http3.Transport{
+	// 	TLSClientConfig: &tls.Config{
+	// 		MinVersion: tls.VersionTLS13,
+	// 	},
+	// }
+	// transport := &h3Transport{
+	// 	tcp:  tcpTransport,
+	// 	quic: quicTransport,
+	// }
 
 	client := &http.Client{
 		Timeout:   FetchTimeout,
-		Transport: transport,
+		Transport: tcpTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= MaxRedirects {
 				return fmt.Errorf("too many redirects")
