@@ -157,3 +157,39 @@ groups:
         annotations:
           summary: "File descriptor usage above 80%"
           description: "Instance {{ $labels.instance }} using {{ $value | humanizePercentage }} of max FDs."
+
+      # --- CoreDNS ---
+
+      - alert: CoreDNSDown
+        expr: up{job="coredns"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CoreDNS is down on {{ $labels.instance }}"
+          description: "Local DNS resolver is unreachable. All DNS lookups will fail on this node."
+
+      - alert: CoreDNSHighLatency
+        expr: >
+          histogram_quantile(0.95,
+            sum by (le, instance) (rate(coredns_dns_request_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CoreDNS p95 latency above 1 second"
+          description: "DNS resolution is slow on {{ $labels.instance }}. Check upstream forwarders."
+
+      - alert: CoreDNSLowCacheHitRate
+        expr: >
+          sum by (instance) (rate(coredns_cache_hits_total[10m]))
+          / (sum by (instance) (rate(coredns_cache_hits_total[10m]))
+           + sum by (instance) (rate(coredns_cache_misses_total[10m])))
+          < 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CoreDNS cache hit rate below 50%"
+          description: "{{ $labels.instance }} has low cache efficiency ({{ $value | humanizePercentage }}). Many unique domains being crawled."
