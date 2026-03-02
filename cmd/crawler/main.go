@@ -183,10 +183,11 @@ func main() {
 
 	// --- Mode-dependent init ---
 	var (
-		rdb          *redis.Client
-		consulClient *consul.Client
-		sender       *inbox.Sender
-		consumer     *inbox.Consumer
+		rdb             *redis.Client
+		consulClient    *consul.Client
+		sender          *inbox.Sender
+		consumer        *inbox.Consumer
+		consulServiceID string
 	)
 
 	if *standalone {
@@ -217,7 +218,13 @@ func main() {
 		sender = inbox.NewSender(hashRing, *nodeID, dd)
 		consumer = inbox.NewConsumer(rdb, dd, dm)
 
+		// Register in Consul and ensure this node is in the hash ring
+		// before loading seeds so seed distribution is correct.
+		consulServiceID = registerConsulService(consulClient, *nodeID, *metricsPort)
 		updateTopology(consulClient, hashRing, sender, *nodeID)
+		// Consul health check may not have passed yet, so ensure self is
+		// in the ring for correct seed distribution.
+		hashRing.EnsureNode(ring.Node{ID: *nodeID, Addr: fmt.Sprintf("localhost:%d", *metricsPort)})
 	}
 	defer func() {
 		if sender != nil {
@@ -321,9 +328,8 @@ func main() {
 
 	// Distributed-only goroutines
 	if !*standalone {
-		// Register this crawler in Consul (now that /health is serving)
-		serviceID := registerConsulService(consulClient, *nodeID, *metricsPort)
-		defer deregisterConsulService(consulClient, serviceID)
+		// Consul registration was done before seed loading; defer deregistration
+		defer deregisterConsulService(consulClient, consulServiceID)
 
 		go watchTopology(ctx, consulClient, hashRing, sender, *nodeID)
 		go reportMetrics(ctx, dm, fr, hashRing, rdb, dd, warcClient, fetchResults)
