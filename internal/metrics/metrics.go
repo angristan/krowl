@@ -362,6 +362,20 @@ var (
 		Namespace: ns, Name: "topology_nodes",
 		Help: "Number of nodes in the hash ring",
 	})
+
+	// Pipeline channel fill levels
+	ChanFanout = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "chan_fanout_len",
+		Help: "Items in fanout channel (fetch -> fan-out)",
+	})
+	ChanParse = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "chan_parse_len",
+		Help: "Items in parse channel (fan-out -> parsers)",
+	})
+	ChanWarc = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "chan_warc_len",
+		Help: "Items in WARC channel (fan-out -> WARC writer)",
+	})
 )
 
 // Register registers all krowl metrics. Go runtime and process collectors are
@@ -417,6 +431,9 @@ func Register() {
 		FrontierSize, FrontierDomains, ActiveDomains,
 		TrackedDomains, TopologyNodes,
 	)
+
+	// Pipeline channels
+	prometheus.MustRegister(ChanFanout, ChanParse, ChanWarc)
 }
 
 // StatusBucket returns a label for HTTP status grouping: "2xx", "3xx", etc.

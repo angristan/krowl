@@ -130,13 +130,21 @@ func TestPersistence(t *testing.T) {
 		t.Fatalf("first Close() error: %v", err)
 	}
 
-	// Second session: reopen the same path. URLs should still be seen
-	// via Pebble even though the bloom filter is fresh.
+	// Second session: reopen the same path. WarmBloom must reload keys
+	// into the fresh bloom filter (same as main.go startup sequence).
 	d2, err := New(dir, 1000)
 	if err != nil {
 		t.Fatalf("second New() error: %v", err)
 	}
 	defer d2.Close()
+
+	n, err := d2.WarmBloom()
+	if err != nil {
+		t.Fatalf("WarmBloom() error: %v", err)
+	}
+	if n != len(urls) {
+		t.Fatalf("WarmBloom() loaded %d keys, want %d", n, len(urls))
+	}
 
 	for _, u := range urls {
 		if d2.IsNew(u) {
