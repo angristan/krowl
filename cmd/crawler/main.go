@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/KimMachineGun/automemlimit/memlimit"
 	consul "github.com/hashicorp/consul/api"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
@@ -54,9 +55,30 @@ func main() {
 		fetchWorkersF  = flag.Int("fetch-workers", 100, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF  = flag.Int("parse-workers", 0, "Number of parser goroutines (0 = NumCPU)")
 		maxFrontier    = flag.Int("max-frontier", domain.DefaultMaxFrontier, "Global cap on total queued URLs (backpressure)")
+		memLimitPct    = flag.Int("mem-limit-pct", 90, "GOMEMLIMIT as percentage of cgroup/system memory (0 to disable)")
 		logLevel       = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	)
 	flag.Parse()
+
+	// Auto-set GOMEMLIMIT from cgroup limit (systemd MemoryMax) or system memory.
+	// Respects GOMEMLIMIT env var if already set.
+	if *memLimitPct > 0 {
+		ratio := float64(*memLimitPct) / 100
+		limit, err := memlimit.SetGoMemLimitWithOpts(
+			memlimit.WithRatio(ratio),
+			memlimit.WithProvider(
+				memlimit.ApplyFallback(
+					memlimit.FromCgroup,
+					memlimit.FromSystem,
+				),
+			),
+		)
+		if err != nil {
+			slog.Warn("automemlimit failed", "error", err)
+		} else if limit > 0 {
+			slog.Info("GOMEMLIMIT set", "limit_mb", limit/(1024*1024), "ratio", ratio)
+		}
+	}
 
 	mode := "distributed"
 	if *standalone {

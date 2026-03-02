@@ -64,6 +64,7 @@ type Pool struct {
 	client    *http.Client
 	userAgent string
 	workers   int
+	zstdDec   *zstd.Decoder // shared decoder, safe for concurrent use via DecodeAll
 }
 
 // h3Transport wraps HTTP/1.1+2 and HTTP/3 transports.
@@ -141,6 +142,16 @@ func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, u
 		},
 	}
 
+	// Shared zstd decoder — safe for concurrent use via DecodeAll.
+	// WithDecoderMaxWindow limits memory per decompression to 8MB.
+	zd, err := zstd.NewReader(nil,
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxWindow(8<<20),
+	)
+	if err != nil {
+		panic(fmt.Sprintf("zstd decoder: %v", err))
+	}
+
 	return &Pool{
 		domains:   dm,
 		frontier:  fr,
@@ -148,6 +159,7 @@ func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, u
 		client:    client,
 		userAgent: userAgent,
 		workers:   workers,
+		zstdDec:   zd,
 	}
 }
 
@@ -408,14 +420,33 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 		bodyReader = brotli.NewReader(resp.Body)
 		m.ResponseEncoding.WithLabelValues("br").Inc()
 	case "zstd":
-		zr, err := zstd.NewReader(resp.Body)
+		// Use shared decoder — read compressed data first, then decode.
+		compressed, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodySize))
+		if err != nil {
+			m.FetchErrors.WithLabelValues("body_read").Inc()
+			return nil, err
+		}
+		decoded, err := p.zstdDec.DecodeAll(compressed, nil)
 		if err != nil {
 			m.FetchErrors.WithLabelValues("decompress").Inc()
-			return nil, fmt.Errorf("zstd reader: %w", err)
+			return nil, fmt.Errorf("zstd decode: %w", err)
 		}
-		defer zr.Close()
-		bodyReader = zr
 		m.ResponseEncoding.WithLabelValues("zstd").Inc()
+		// Skip the normal body read below — we already have the decoded bytes.
+		body := decoded
+		if int64(len(body)) > MaxBodySize {
+			body = body[:MaxBodySize]
+		}
+		totalDuration := time.Since(fetchStart).Seconds()
+		m.FetchDuration.Observe(totalDuration)
+		m.ResponseSize.Observe(float64(len(body)))
+		m.RedirectsFollowed.Observe(float64(redirectCount))
+		requestURI := req.URL.RequestURI()
+		return &Result{
+			URL: rawURL, Domain: d, Body: body, Status: resp.StatusCode,
+			Headers: resp.Header, RequestHeaders: reqHeaders,
+			Method: req.Method, RequestURI: requestURI,
+		}, nil
 	case "":
 		m.ResponseEncoding.WithLabelValues("none").Inc()
 	default:
