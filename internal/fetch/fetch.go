@@ -4,6 +4,7 @@
 package fetch
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -16,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/stanislas/krowl/internal/domain"
 	"github.com/stanislas/krowl/internal/frontier"
@@ -112,6 +115,7 @@ func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, u
 		MaxIdleConnsPerHost: maxIdleConnsPerHost,
 		IdleConnTimeout:     idleConnTimeout,
 		TLSHandshakeTimeout: tlsHandshakeTimeout,
+		DisableCompression:  true, // we handle gzip/br/zstd ourselves
 		ForceAttemptHTTP2:   true, // negotiate HTTP/2 via ALPN
 	}
 
@@ -283,6 +287,7 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	}
 	req.Header.Set("User-Agent", p.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Encoding", "gzip, br, zstd")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	// Capture request headers before sending (for WARC request record)
@@ -374,7 +379,40 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 		return nil, fmt.Errorf("%w: non-html content type: %s", errNonRetryable, ct)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodySize))
+	// Decompress response body based on Content-Encoding.
+	// We advertise Accept-Encoding: gzip, br, zstd and handle decompression ourselves
+	// so WARC stores usable (decompressed) content.
+	bodyReader := io.Reader(resp.Body)
+	encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
+	switch encoding {
+	case "gzip", "x-gzip":
+		gr, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			m.FetchErrors.WithLabelValues("decompress").Inc()
+			return nil, fmt.Errorf("gzip reader: %w", err)
+		}
+		defer gr.Close()
+		bodyReader = gr
+		m.ResponseEncoding.WithLabelValues("gzip").Inc()
+	case "br":
+		bodyReader = brotli.NewReader(resp.Body)
+		m.ResponseEncoding.WithLabelValues("br").Inc()
+	case "zstd":
+		zr, err := zstd.NewReader(resp.Body)
+		if err != nil {
+			m.FetchErrors.WithLabelValues("decompress").Inc()
+			return nil, fmt.Errorf("zstd reader: %w", err)
+		}
+		defer zr.Close()
+		bodyReader = zr
+		m.ResponseEncoding.WithLabelValues("zstd").Inc()
+	case "":
+		m.ResponseEncoding.WithLabelValues("none").Inc()
+	default:
+		m.ResponseEncoding.WithLabelValues("other").Inc()
+	}
+
+	body, err := io.ReadAll(io.LimitReader(bodyReader, MaxBodySize))
 	if err != nil {
 		m.FetchErrors.WithLabelValues("body_read").Inc()
 		return nil, err

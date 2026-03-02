@@ -143,6 +143,12 @@ var (
 		Namespace: ns, Name: "tls_cipher_total",
 		Help: "TLS cipher suite negotiated",
 	}, []string{"cipher"})
+
+	// Response content encoding
+	ResponseEncoding = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "response_encoding_total",
+		Help: "Content-Encoding of server responses",
+	}, []string{"encoding"})
 )
 
 // ---- Parse / Links ----
@@ -360,7 +366,7 @@ func Register() {
 		PagesFetched, FetchErrors, FetchRetries, DomainsDead, FetchDuration,
 		DNSDuration, ConnectDuration, TLSDuration, TTFBDuration,
 		ResponseSize, ContentTypes, RedirectsFollowed, RobotsBlocked,
-		HTTPVersion, URLScheme, TLSVersion, TLSCipher,
+		HTTPVersion, URLScheme, TLSVersion, TLSCipher, ResponseEncoding,
 	)
 
 	// Parse / links
