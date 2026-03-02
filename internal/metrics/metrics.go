@@ -144,6 +144,12 @@ var (
 		Help: "TLS cipher suite negotiated",
 	}, []string{"cipher"})
 
+	// IP version (IPv4 vs IPv6)
+	IPVersion = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "ip_version_total",
+		Help: "IP version used for connection",
+	}, []string{"version"})
+
 	// Response content encoding
 	ResponseEncoding = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Name: "response_encoding_total",
@@ -366,7 +372,7 @@ func Register() {
 		PagesFetched, FetchErrors, FetchRetries, DomainsDead, FetchDuration,
 		DNSDuration, ConnectDuration, TLSDuration, TTFBDuration,
 		ResponseSize, ContentTypes, RedirectsFollowed, RobotsBlocked,
-		HTTPVersion, URLScheme, TLSVersion, TLSCipher, ResponseEncoding,
+		HTTPVersion, URLScheme, TLSVersion, TLSCipher, IPVersion, ResponseEncoding,
 	)
 
 	// Parse / links

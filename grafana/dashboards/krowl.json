@@ -1118,7 +1118,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 5,
+        "w": 4,
         "x": 0,
         "y": 40
       },
@@ -1166,8 +1166,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 5,
-        "x": 5,
+        "w": 4,
+        "x": 4,
         "y": 40
       },
       "targets": [
@@ -1214,8 +1214,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 5,
-        "x": 10,
+        "w": 4,
+        "x": 8,
         "y": 40
       },
       "targets": [
@@ -1262,8 +1262,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 5,
-        "x": 15,
+        "w": 4,
+        "x": 12,
         "y": 40
       },
       "targets": [
@@ -1311,13 +1311,61 @@
       "gridPos": {
         "h": 8,
         "w": 4,
-        "x": 20,
+        "x": 16,
         "y": 40
       },
       "targets": [
         {
           "expr": "sum(rate(krowl_response_encoding_total{instance=~\"$instance\"}[$__rate_interval])) by (encoding)",
           "legendFormat": "{{encoding}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "IP Version",
+      "id": 295,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 20,
+        "y": 40
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(krowl_ip_version_total{instance=~\"$instance\"}[$__rate_interval])) by (version)",
+          "legendFormat": "{{version}}",
           "refId": "A"
         }
       ],
