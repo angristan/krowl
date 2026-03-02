@@ -223,31 +223,21 @@ var (
 )
 
 // ---- WARC ----
+// WARC recording is handled by gowarc at the transport layer.
+// DataTotal and WaitGroup.Size() are exposed by gowarc's global atomics.
 
 var (
-	WARCBytesWritten = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: ns, Name: "warc_bytes_written_total",
-		Help: "Total bytes written to WARC files (compressed)",
-	})
-	WARCRecordsWritten = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: ns, Name: "warc_records_written_total",
-		Help: "Total WARC records written",
-	})
-	WARCFileRotations = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: ns, Name: "warc_file_rotations_total",
-		Help: "Number of WARC file rotations",
-	})
 	WARCWriteErrors = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: ns, Name: "warc_write_errors_total",
-		Help: "WARC write errors",
+		Help: "WARC write errors (from gowarc ErrChan)",
 	})
-	WARCCurrentFileSize = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: ns, Name: "warc_current_file_bytes",
-		Help: "Current WARC file size in bytes",
+	WARCDataBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "warc_data_bytes_total",
+		Help: "Total WARC record content bytes written (from gowarc DataTotal, monotonic)",
 	})
-	WARCActiveWriters = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: ns, Name: "warc_active_writers",
-		Help: "Current number of active WARC writer goroutines",
+	WARCInflightWriters = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "warc_inflight_writers",
+		Help: "Number of in-flight gowarc WARC writing goroutines",
 	})
 )
 
@@ -373,17 +363,9 @@ var (
 	})
 
 	// Pipeline channel fill levels
-	ChanFanout = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: ns, Name: "chan_fanout_len",
-		Help: "Items in fanout channel (fetch -> fan-out)",
-	})
 	ChanParse = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: ns, Name: "chan_parse_len",
-		Help: "Items in parse channel (fan-out -> parsers)",
-	})
-	ChanWarc = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: ns, Name: "chan_warc_len",
-		Help: "Items in WARC channel (fan-out -> WARC writer)",
+		Help: "Items in parse channel (fetch -> parsers)",
 	})
 )
 
@@ -411,10 +393,7 @@ func Register() {
 	)
 
 	// WARC
-	prometheus.MustRegister(
-		WARCBytesWritten, WARCRecordsWritten, WARCFileRotations,
-		WARCWriteErrors, WARCCurrentFileSize, WARCActiveWriters,
-	)
+	prometheus.MustRegister(WARCWriteErrors, WARCDataBytes, WARCInflightWriters)
 
 	// Inbox
 	prometheus.MustRegister(
@@ -442,7 +421,7 @@ func Register() {
 	)
 
 	// Pipeline channels
-	prometheus.MustRegister(ChanFanout, ChanParse, ChanWarc)
+	prometheus.MustRegister(ChanParse)
 }
 
 // StatusBucket returns a label for HTTP status grouping: "2xx", "3xx", etc.

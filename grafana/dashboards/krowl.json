@@ -894,24 +894,9 @@
       },
       "targets": [
         {
-          "expr": "krowl_chan_fanout_len{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}} fanout (fetch\u2192fan-out)",
-          "refId": "A"
-        },
-        {
           "expr": "krowl_chan_parse_len{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}} parse (fan-out\u2192parsers)",
-          "refId": "B"
-        },
-        {
-          "expr": "krowl_chan_warc_len{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}} warc (fan-out\u2192WARC writer)",
-          "refId": "C"
-        },
-        {
-          "expr": "krowl_warc_active_writers{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}} WARC writers",
-          "refId": "D"
+          "legendFormat": "{{instance}} parse (fetch\u2192parsers)",
+          "refId": "A"
         }
       ],
       "fieldConfig": {
@@ -926,54 +911,7 @@
             "showPoints": "never"
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "/.*WARC writers/"
-            },
-            "properties": [
-              {
-                "id": "custom.axisPlacement",
-                "value": "right"
-              },
-              {
-                "id": "unit",
-                "value": "short"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 32
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [10, 5]
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "yellow"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "options": {
         "tooltip": {
@@ -2045,9 +1983,14 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(krowl_warc_bytes_written_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "Bytes/sec",
+          "expr": "sum(rate(krowl_warc_data_bytes_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "Total",
           "refId": "A"
+        },
+        {
+          "expr": "rate(krowl_warc_data_bytes_total{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}}",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -2057,7 +2000,15 @@
             "fillOpacity": 20
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Total" },
+            "properties": [
+              { "id": "custom.lineWidth", "value": 2 },
+              { "id": "custom.fillOpacity", "value": 0 }
+            ]
+          }
+        ]
       },
       "options": {
         "tooltip": {
@@ -2076,7 +2027,7 @@
     },
     {
       "type": "timeseries",
-      "title": "WARC Records & Rotations",
+      "title": "WARC Data Written",
       "id": 24,
       "datasource": {
         "type": "prometheus",
@@ -2090,26 +2041,16 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(krowl_warc_records_written_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "Records/sec",
+          "expr": "krowl_warc_data_bytes_total{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}",
           "refId": "A"
-        },
-        {
-          "expr": "sum(increase(krowl_warc_file_rotations_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "Rotations",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(rate(krowl_warc_write_errors_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "Write errors",
-          "refId": "C"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "unit": "decbytes",
           "custom": {
-            "fillOpacity": 10
+            "fillOpacity": 20
           }
         },
         "overrides": []
@@ -2123,7 +2064,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "calcs": [
-            "mean",
+            "lastNotNull",
             "max"
           ]
         }
@@ -2131,7 +2072,7 @@
     },
     {
       "type": "timeseries",
-      "title": "WARC Current File Size",
+      "title": "WARC Writers & Errors",
       "id": 25,
       "datasource": {
         "type": "prometheus",
@@ -2145,19 +2086,32 @@
       },
       "targets": [
         {
-          "expr": "krowl_warc_current_file_bytes{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}}",
+          "expr": "krowl_warc_inflight_writers{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} in-flight",
           "refId": "A"
+        },
+        {
+          "expr": "rate(krowl_warc_write_errors_total{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} errors/s",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "decbytes",
+          "unit": "short",
           "custom": {
-            "fillOpacity": 20
+            "fillOpacity": 10
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "/.*errors.*/" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+            ]
+          }
+        ]
       },
       "options": {
         "tooltip": {
