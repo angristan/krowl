@@ -111,6 +111,25 @@ func (p *Pool) parseLoop(ctx context.Context, id int) {
 	}
 }
 
+// Worker runs a single parse worker. Blocks until done is closed, ctx is
+// cancelled, or the results channel is closed. Used by the parse scaler
+// for dynamic worker management.
+func (p *Pool) Worker(ctx context.Context, done <-chan struct{}) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case result, ok := <-p.results:
+			if !ok {
+				return
+			}
+			p.processResult(ctx, result)
+		}
+	}
+}
+
 func (p *Pool) processResult(ctx context.Context, result fetch.Result) {
 	// Content hash dedup: skip link extraction for repeated soft-404 bodies
 	if p.contentDedup.isDuplicate(result.Domain, result.Body) {
