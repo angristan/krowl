@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/stanislas/krowl/internal/domain"
 	"github.com/stanislas/krowl/internal/frontier"
 	m "github.com/stanislas/krowl/internal/metrics"
@@ -62,10 +63,47 @@ type Pool struct {
 	workers   int
 }
 
+// h3Transport wraps HTTP/1.1+2 and HTTP/3 transports.
+// First request to a host always uses TCP (HTTP/1.1 or HTTP/2).
+// If the response advertises Alt-Svc: h3, subsequent requests to that
+// host are attempted over QUIC, falling back to TCP on failure.
+type h3Transport struct {
+	tcp     *http.Transport
+	quic    *http3.Transport
+	h3Hosts sync.Map // host -> struct{}: hosts that advertised h3
+}
+
+func (t *h3Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	host := req.URL.Host
+
+	// If this host is known to support h3, try QUIC first.
+	if _, ok := t.h3Hosts.Load(host); ok {
+		resp, err := t.quic.RoundTrip(req)
+		if err == nil {
+			return resp, nil
+		}
+		// QUIC failed — forget h3 for this host, fall back to TCP.
+		t.h3Hosts.Delete(host)
+	}
+
+	// Standard HTTP/1.1 + HTTP/2 over TCP.
+	resp, err := t.tcp.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Learn h3 support from Alt-Svc header.
+	if altSvc := resp.Header.Get("Alt-Svc"); strings.Contains(altSvc, "h3") {
+		t.h3Hosts.Store(host, struct{}{})
+	}
+
+	return resp, nil
+}
+
 // NewPool creates a fetcher pool with connection pooling.
 // DNS caching is handled by CoreDNS on localhost.
 func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, userAgent string, workers int) *Pool {
-	transport := &http.Transport{
+	tcpTransport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   dialTimeout,
 			KeepAlive: dialKeepAlive,
@@ -74,8 +112,20 @@ func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, u
 		MaxIdleConnsPerHost: maxIdleConnsPerHost,
 		IdleConnTimeout:     idleConnTimeout,
 		TLSHandshakeTimeout: tlsHandshakeTimeout,
-		DisableCompression:  true,  // we want raw content for WARC
-		ForceAttemptHTTP2:   false, // HTTP/1.1 for simpler keep-alive
+		DisableCompression:  true, // we want raw content for WARC
+		ForceAttemptHTTP2:   true, // negotiate HTTP/2 via ALPN
+	}
+
+	quicTransport := &http3.Transport{
+		DisableCompression: true,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13, // QUIC requires TLS 1.3
+		},
+	}
+
+	transport := &h3Transport{
+		tcp:  tcpTransport,
+		quic: quicTransport,
 	}
 
 	client := &http.Client{
