@@ -2321,7 +2321,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Network Receive Rate (Stacked)",
+      "title": "Network Receive Rate",
       "id": 246,
       "datasource": {
         "type": "prometheus",
@@ -2329,7 +2329,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 114
       },
@@ -2344,12 +2344,11 @@
         "defaults": {
           "unit": "Mbps",
           "custom": {
-            "fillOpacity": 80,
+            "fillOpacity": 10,
             "stacking": {
               "mode": "normal",
               "group": "A"
-            },
-            "lineWidth": 1
+            }
           }
         },
         "overrides": []
@@ -2371,7 +2370,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Network Transmit Rate (Stacked)",
+      "title": "Network Transmit Rate",
       "id": 247,
       "datasource": {
         "type": "prometheus",
@@ -2379,8 +2378,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 114
       },
       "targets": [
@@ -2394,12 +2393,60 @@
         "defaults": {
           "unit": "Mbps",
           "custom": {
-            "fillOpacity": 80,
+            "fillOpacity": 10,
             "stacking": {
               "mode": "normal",
               "group": "A"
-            },
-            "lineWidth": 1
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "TCP Connections",
+      "id": 248,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 114
+      },
+      "targets": [
+        {
+          "expr": "node_netstat_Tcp_CurrEstab",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
           }
         },
         "overrides": []
