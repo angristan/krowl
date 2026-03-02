@@ -80,6 +80,7 @@ type Manager struct {
 	userAgent   string
 	totalQueued atomic.Int64 // global count of URLs across all domain queues
 	maxFrontier int64        // global cap; 0 = unlimited
+
 }
 
 // NewManager creates a domain manager with the given user agent string.
@@ -331,7 +332,7 @@ func (m *Manager) ActiveDomains() []string {
 
 // DiscoverSitemap fetches the sitemap for a domain and enqueues any URLs found.
 // Should be called after the first robots.txt fetch. Safe to call multiple times
-// (only runs once per domain).
+// (only runs once per domain). Concurrency is limited by sitemapSem.
 func (m *Manager) DiscoverSitemap(d string) {
 	m.mu.Lock()
 	s := m.getOrCreateLocked(d)

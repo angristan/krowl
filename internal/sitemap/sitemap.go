@@ -1,5 +1,6 @@
 // Package sitemap fetches and parses XML sitemaps to discover URLs.
 // Handles both regular sitemaps and sitemap index files.
+// Uses streaming xml.Decoder to avoid loading full DOM into memory.
 package sitemap
 
 import (
@@ -13,31 +14,11 @@ import (
 )
 
 const (
-	MaxSitemapSize = 10 * 1024 * 1024 // 10MB
+	MaxSitemapSize = 2 * 1024 * 1024 // 2MB (down from 10MB)
 	FetchTimeout   = 15 * time.Second
 	MaxURLsPerSite = 10000 // cap to avoid memory issues on huge sitemaps
 	MaxIndexDepth  = 2     // don't follow sitemap indexes more than 2 levels deep
 )
-
-// sitemapIndex represents a sitemap index file.
-type sitemapIndex struct {
-	XMLName  xml.Name         `xml:"sitemapindex"`
-	Sitemaps []sitemapPointer `xml:"sitemap"`
-}
-
-type sitemapPointer struct {
-	Loc string `xml:"loc"`
-}
-
-// urlSet represents a regular sitemap.
-type urlSet struct {
-	XMLName xml.Name     `xml:"urlset"`
-	URLs    []sitemapURL `xml:"url"`
-}
-
-type sitemapURL struct {
-	Loc string `xml:"loc"`
-}
 
 // Fetcher fetches and parses sitemaps for domains.
 type Fetcher struct {
@@ -100,37 +81,147 @@ func (f *Fetcher) fetchSitemap(url string, depth int) []string {
 	if err != nil {
 		return nil
 	}
+	defer body.Close()
 
-	// Try to parse as sitemap index first
-	var idx sitemapIndex
-	if err := xml.Unmarshal(body, &idx); err == nil && len(idx.Sitemaps) > 0 {
-		var urls []string
-		for _, s := range idx.Sitemaps {
-			urls = append(urls, f.fetchSitemap(s.Loc, depth+1)...)
-			if len(urls) >= MaxURLsPerSite {
-				return urls[:MaxURLsPerSite]
-			}
+	return f.streamParse(body, depth)
+}
+
+// streamParse uses xml.Decoder to parse a sitemap without loading the full
+// DOM into memory. It detects the root element to distinguish sitemap index
+// files (<sitemapindex>) from regular sitemaps (<urlset>), then streams
+// child elements extracting <loc> values.
+func (f *Fetcher) streamParse(r io.Reader, depth int) []string {
+	dec := xml.NewDecoder(r)
+	// Disable strict mode to tolerate malformed sitemaps
+	dec.Strict = false
+
+	// Find the root element to determine sitemap type
+	var rootName string
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil
 		}
-		return urls
+		if se, ok := tok.(xml.StartElement); ok {
+			rootName = se.Name.Local
+			break
+		}
 	}
 
-	// Parse as regular sitemap
-	var us urlSet
-	if err := xml.Unmarshal(body, &us); err != nil {
+	switch rootName {
+	case "sitemapindex":
+		return f.parseIndex(dec, depth)
+	case "urlset":
+		return f.parseURLSet(dec)
+	default:
 		return nil
 	}
+}
 
-	urls := make([]string, 0, len(us.URLs))
-	for _, u := range us.URLs {
-		loc := strings.TrimSpace(u.Loc)
-		if loc != "" && (strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://")) {
-			urls = append(urls, loc)
+// parseIndex streams a <sitemapindex>, extracting <loc> from each <sitemap>
+// child and recursively fetching them.
+func (f *Fetcher) parseIndex(dec *xml.Decoder, depth int) []string {
+	var urls []string
+
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break // EOF or error
+		}
+
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+
+		if se.Name.Local == "sitemap" {
+			loc := extractLoc(dec, "sitemap")
+			if loc != "" {
+				child := f.fetchSitemap(loc, depth+1)
+				urls = append(urls, child...)
+				if len(urls) >= MaxURLsPerSite {
+					return urls[:MaxURLsPerSite]
+				}
+			}
 		}
 	}
 	return urls
 }
 
-func (f *Fetcher) fetch(url string) ([]byte, error) {
+// parseURLSet streams a <urlset>, extracting <loc> from each <url> child.
+func (f *Fetcher) parseURLSet(dec *xml.Decoder) []string {
+	var urls []string
+
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break // EOF or error
+		}
+
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+
+		if se.Name.Local == "url" {
+			loc := extractLoc(dec, "url")
+			if loc != "" && (strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://")) {
+				urls = append(urls, loc)
+				if len(urls) >= MaxURLsPerSite {
+					return urls
+				}
+			}
+		}
+	}
+	return urls
+}
+
+// extractLoc reads inside a parent element (e.g. <url> or <sitemap>) and
+// returns the text content of the first <loc> child. Consumes tokens until
+// the matching end element.
+func extractLoc(dec *xml.Decoder, parent string) string {
+	var loc string
+	depth := 1
+
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return loc
+		}
+
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			if t.Name.Local == "loc" {
+				// Read the text content of <loc>
+				var content string
+				for {
+					inner, err := dec.Token()
+					if err != nil {
+						return ""
+					}
+					if cd, ok := inner.(xml.CharData); ok {
+						content += string(cd)
+					}
+					if _, ok := inner.(xml.EndElement); ok {
+						depth--
+						break
+					}
+				}
+				loc = strings.TrimSpace(content)
+			}
+		case xml.EndElement:
+			depth--
+			if depth == 0 && t.Name.Local == parent {
+				return loc
+			}
+		}
+	}
+}
+
+// fetch downloads a sitemap URL, returning the response body as a reader.
+// The caller MUST close the returned ReadCloser.
+func (f *Fetcher) fetch(url string) (io.ReadCloser, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -141,18 +232,30 @@ func (f *Fetcher) fetch(url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	ct := resp.Header.Get("Content-Type")
 	if !strings.Contains(ct, "xml") && !strings.Contains(ct, "text/") {
+		resp.Body.Close()
 		return nil, fmt.Errorf("non-xml content type: %s", ct)
 	}
 
-	return io.ReadAll(io.LimitReader(resp.Body, MaxSitemapSize))
+	// Wrap in LimitReader to cap memory, but return as ReadCloser
+	// so the underlying connection gets released.
+	return &limitedReadCloser{
+		Reader: io.LimitReader(resp.Body, MaxSitemapSize),
+		Closer: resp.Body,
+	}, nil
+}
+
+// limitedReadCloser wraps an io.Reader with a separate io.Closer.
+type limitedReadCloser struct {
+	io.Reader
+	io.Closer
 }
 
 func contains(ss []string, s string) bool {
