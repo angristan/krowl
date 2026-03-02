@@ -123,13 +123,15 @@ systemctl start consul
 # --- Redis (local inbox + frontier) ---
 apt-get install -y -qq redis-server
 
-cat >/etc/redis/redis.conf <<'REDIS'
+mkdir -p /mnt/jfs/data/worker-${node_id}/redis
+cat >/etc/redis/redis.conf <<REDIS
 bind 0.0.0.0
 port 6379
 protected-mode no
 maxmemory 1gb
 maxmemory-policy noeviction
-save ""
+dir /mnt/jfs/data/worker-${node_id}/redis
+save 300 1
 appendonly no
 REDIS
 
@@ -310,12 +312,12 @@ Requires=consul.service redis-server.service juicefs.service
 ExecStart=/usr/local/bin/crawler \
   --node-id=${node_id} \
   --seeds=/mnt/jfs/seeds/top10k.txt \
-  --pebble=/var/data/pebble \
+  --pebble=/mnt/jfs/data/worker-${node_id}/pebble \
   --redis=localhost:6379 \
   --consul=localhost:8500 \
   --metrics-port=9090 \
   --warc-dir=/mnt/jfs/warcs \
-  --checkpoint=/var/data/frontier.ckpt
+  --checkpoint=/mnt/jfs/data/worker-${node_id}/frontier.ckpt
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
