@@ -6,22 +6,27 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
 	"github.com/grafana/pyroscope-go"
 	consul "github.com/hashicorp/consul/api"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
+
+	warc "github.com/internetarchive/gowarc"
 
 	"github.com/stanislas/krowl/internal/checkpoint"
 	"github.com/stanislas/krowl/internal/dedup"
@@ -32,7 +37,6 @@ import (
 	m "github.com/stanislas/krowl/internal/metrics"
 	"github.com/stanislas/krowl/internal/parse"
 	"github.com/stanislas/krowl/internal/ring"
-	"github.com/stanislas/krowl/internal/warc"
 )
 
 const userAgent = "krowl/1.0 (+https://github.com/stanislas/krowl; crawl@stanislas.blog)"
@@ -57,8 +61,10 @@ func main() {
 		fetchWorkersF   = flag.Int("fetch-workers", 100, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
 		parseWorkersMax = flag.Int("parse-workers-max", 16, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
-		warcWritersF    = flag.Int("warc-writers", 4, "Minimum number of WARC writer goroutines")
-		warcWritersMax  = flag.Int("warc-writers-max", 16, "Maximum WARC writers (auto-scaled based on channel backpressure)")
+		warcPoolSize    = flag.Int("warc-pool-size", 4, "Number of concurrent WARC writer goroutines (gowarc pool)")
+		warcSizeMB      = flag.Float64("warc-size-mb", 1024, "Max WARC file size in MB before rotation")
+		warcTempDir     = flag.String("warc-temp-dir", "/tmp/krowl-warc", "Temp directory for gowarc spooled files")
+		warcOnDisk      = flag.Bool("warc-on-disk", false, "Write WARC payloads to disk instead of RAM (reduces memory, slower)")
 		maxFrontier     = flag.Int("max-frontier", domain.DefaultMaxFrontier, "Global cap on total queued URLs (backpressure)")
 		memLimitPct     = flag.Int("mem-limit-pct", 70, "GOMEMLIMIT as percentage of cgroup/system memory (0 to disable)")
 		pyroscopeAddr   = flag.String("pyroscope", "", "Pyroscope server address (e.g. http://10.100.0.6:4040), empty to disable")
@@ -244,27 +250,63 @@ func main() {
 	if parseMax < parseMin {
 		parseMax = parseMin
 	}
-	warcMin := *warcWritersF
-	warcMax := *warcWritersMax
-	if warcMax < warcMin {
-		warcMax = warcMin
-	}
 	slog.Info("worker pool configured",
 		"fetch_workers", fetchWorkers,
 		"parse_min", parseMin, "parse_max", parseMax,
-		"warc_min", warcMin, "warc_max", warcMax,
+		"warc_pool_size", *warcPoolSize,
 		"cpus", cpus)
 
-	// Channels
+	// --- gowarc WARC-writing HTTP client ---
+	// WARC recording happens transparently at the transport layer.
+	// Every HTTP request/response is captured via TeeReader/MultiWriter
+	// wrapping on the TCP connection, then written to rotating WARC files.
+	rotatorSettings := &warc.RotatorSettings{
+		WarcinfoContent: warc.Header{
+			"software": userAgent,
+		},
+		Prefix:             "KROWL",
+		Compression:        "gzip",
+		WARCWriterPoolSize: *warcPoolSize,
+		WARCSize:           *warcSizeMB,
+		OutputDirectory:    *warcDir,
+	}
+
+	warcClient, err := warc.NewWARCWritingHTTPClient(warc.HTTPClientSettings{
+		RotatorSettings:       rotatorSettings,
+		TempDir:               *warcTempDir,
+		FollowRedirects:       true,
+		MaxReadBeforeTruncate: fetch.MaxBodySize,
+		DecompressBody:        true,
+		VerifyCerts:           false,
+		FullOnDisk:            *warcOnDisk,
+		DNSServers:            []string{"127.0.0.1"}, // Use local CoreDNS (port from resolv.conf, default 53)
+	})
+	if err != nil {
+		slog.Error("failed to create WARC HTTP client", "error", err)
+		os.Exit(1)
+	}
+	// ErrChan MUST be drained — it is unbuffered and will block gowarc otherwise.
+	go func() {
+		for warcErr := range warcClient.ErrChan {
+			slog.Warn("gowarc error", "error", warcErr.Err, "func", warcErr.Func)
+			m.WARCWriteErrors.Inc()
+		}
+	}()
+
+	// Patch gowarc's transport so connections expose TLS state via
+	// ConnectionState(). This makes resp.TLS non-nil, restoring TLS
+	// version and cipher metrics that gowarc would otherwise hide.
+	patchTransportTLS(warcClient)
+
+	// Channels — simplified: fetch writes directly to parse channel.
+	// No fan-out or WARC channel needed (gowarc records at transport layer).
 	fetchResults := make(chan fetch.Result, 10000)
-	warcResults := make(chan fetch.Result, 10000)
-	fanoutResults := make(chan fetch.Result, 10000)
 
 	// Parse pool (metrics are wired directly to the centralized metrics package)
 	parsePool := parse.NewPool(fetchResults, dd, dm, sender, hashRing, *nodeID, parseMin)
 
-	// Fetch pool (writes to fanoutResults, which fans out to parsers + WARC)
-	fetchPool := fetch.NewPool(dm, fr, fanoutResults, userAgent, fetchWorkers)
+	// Fetch pool (writes directly to fetchResults for parsers)
+	fetchPool := fetch.NewPool(dm, fr, fetchResults, warcClient, userAgent, fetchWorkers)
 
 	// --- Start goroutines ---
 	var wg sync.WaitGroup
@@ -284,56 +326,23 @@ func main() {
 		defer deregisterConsulService(consulClient, serviceID)
 
 		go watchTopology(ctx, consulClient, hashRing, sender, *nodeID)
-		go reportMetrics(ctx, dm, fr, hashRing, rdb, dd, fanoutResults, fetchResults, warcResults)
+		go reportMetrics(ctx, dm, fr, hashRing, rdb, dd, warcClient, fetchResults)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			consumer.Run(ctx)
 		}()
 	} else {
-		go reportMetrics(ctx, dm, fr, hashRing, nil, dd, fanoutResults, fetchResults, warcResults)
+		go reportMetrics(ctx, dm, fr, hashRing, nil, dd, warcClient, fetchResults)
 	}
 
-	// WARC writer pool with auto-scaling based on channel backpressure.
-	// Spawns writers when warcResults fills up, stops them when it drains.
-	var warcWg sync.WaitGroup
-	go runWARCScaler(ctx, warcResults, *warcDir, *nodeID, userAgent, warcMin, warcMax, &warcWg)
-
-	// Fan-out: fetchers -> (parsers + WARC writer)
-	// Uses select to send to whichever downstream is ready first,
-	// avoiding head-of-line blocking when one consumer is slower.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for result := range fanoutResults {
-			sentParse, sentWarc := false, false
-			for !sentParse || !sentWarc {
-				if sentParse {
-					warcResults <- result
-					sentWarc = true
-				} else if sentWarc {
-					fetchResults <- result
-					sentParse = true
-				} else {
-					select {
-					case fetchResults <- result:
-						sentParse = true
-					case warcResults <- result:
-						sentWarc = true
-					}
-				}
-			}
-		}
-		close(fetchResults)
-		close(warcResults)
-	}()
-
-	// Fetchers - when ctx is cancelled, Run returns and we close fanoutResults
+	// Fetchers write directly to fetchResults. WARC recording happens
+	// transparently at the gowarc transport layer — no fan-out needed.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		fetchPool.Run(ctx)
-		close(fanoutResults)
+		close(fetchResults)
 	}()
 
 	// Parse worker pool with auto-scaling based on channel backpressure.
@@ -347,9 +356,11 @@ func main() {
 	slog.Info("waiting for goroutines to finish")
 	wg.Wait()
 
-	// Wait for WARC writers to flush remaining records
+	// Flush gowarc WARC writers — waits for in-flight records, closes files.
 	slog.Info("flushing WARC writers")
-	warcWg.Wait()
+	if err := warcClient.Close(); err != nil {
+		slog.Error("gowarc close error", "error", err)
+	}
 
 	// Final frontier checkpoint
 	if err := checkpoint.Save(*checkpointPath, dm.Snapshot()); err != nil {
@@ -503,6 +514,56 @@ func loadSeeds(path string, hashRing *ring.Ring, myID int, dm *domain.Manager) {
 	slog.Info("seeds loaded", "count", count, "node", myID)
 }
 
+// patchTransportTLS wraps gowarc's internal DialTLSContext so that TLS
+// version and cipher suite are extracted from the utls connection and
+// stored in a *fetch.TLSInfo struct passed via the request context.
+//
+// Go's http.Transport only populates resp.TLS for *crypto/tls.Conn
+// (concrete type check), but gowarc returns *CustomConnection wrapping
+// *utls.UConn — a different type. So resp.TLS is always nil with gowarc.
+//
+// Instead, we use reflection to call utls.UConn.ConnectionState() (which
+// returns utls.ConnectionState, not crypto/tls.ConnectionState — same
+// fields, different Go types) and write Version + CipherSuite into the
+// context-stashed TLSInfo.
+func patchTransportTLS(client *warc.CustomHTTPClient) {
+	ct := reflect.ValueOf(client.Transport).Elem()
+	tField := ct.FieldByName("t")
+	//nolint:gosec // Accessing unexported field — required to patch DialTLSContext
+	transport := (*http.Transport)(unsafe.Pointer(tField.UnsafeAddr()))
+
+	origDialTLS := transport.DialTLSContext
+	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := origDialTLS(ctx, network, addr)
+		if err != nil {
+			return conn, err
+		}
+		// Extract TLS state from the gowarc CustomConnection's inner utls.UConn
+		// and write it into the context-stashed TLSInfo for fetch.go to read.
+		if cc, ok := conn.(*warc.CustomConnection); ok {
+			if info, ok := ctx.Value(fetch.TLSInfoKey).(*fetch.TLSInfo); ok {
+				innerVal := reflect.ValueOf(cc.Conn)
+				method := innerVal.MethodByName("ConnectionState")
+				if method.IsValid() {
+					results := method.Call(nil)
+					if len(results) == 1 {
+						csVal := results[0]
+						version := csVal.FieldByName("Version")
+						cipher := csVal.FieldByName("CipherSuite")
+						if version.IsValid() && cipher.IsValid() {
+							info.Version = uint16(version.Uint())
+							info.CipherSuite = uint16(cipher.Uint())
+							info.Set = true
+						}
+					}
+				}
+			}
+		}
+		return conn, nil
+	}
+	slog.Info("patched gowarc transport for TLS state visibility")
+}
+
 func serveHTTP(port int) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
@@ -539,7 +600,7 @@ func periodicCheckpoint(ctx context.Context, dm *domain.Manager, path string, in
 }
 
 // reportMetrics periodically updates gauge metrics that need polling.
-func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontier, hashRing *ring.Ring, rdb *redis.Client, dd *dedup.Dedup, chFanout, chParse, chWarc chan fetch.Result) {
+func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontier, hashRing *ring.Ring, rdb *redis.Client, dd *dedup.Dedup, warcClient *warc.CustomHTTPClient, chParse chan fetch.Result) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -553,9 +614,11 @@ func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontie
 			m.TrackedDomains.Set(float64(dm.DomainCount()))
 			m.TopologyNodes.Set(float64(hashRing.NodeCount()))
 
-			m.ChanFanout.Set(float64(len(chFanout)))
 			m.ChanParse.Set(float64(len(chParse)))
-			m.ChanWarc.Set(float64(len(chWarc)))
+
+			// gowarc internal stats
+			m.WARCDataBytes.Set(float64(warcClient.DataTotal.Load()))
+			m.WARCInflightWriters.Set(float64(warcClient.WaitGroup.Size()))
 
 			if rdb != nil {
 				inboxLen, _ := rdb.LLen(ctx, "inbox").Result()
@@ -584,110 +647,6 @@ func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontie
 				totalKeys += int64(lm.NumFiles)
 			}
 			m.PebbleTotalKeys.Set(float64(totalKeys))
-		}
-	}
-}
-
-// runWARCScaler dynamically manages WARC writer goroutines based on channel
-// backpressure. Fetchers should always be the pipeline bottleneck, not WARC
-// writers. Scale-up is aggressive; scale-down is conservative (sustained low
-// fill for 30s before removing a writer).
-func runWARCScaler(ctx context.Context, ch chan fetch.Result, dir string, nodeID int, software string, minWriters, maxWriters int, wg *sync.WaitGroup) {
-	type writerSlot struct {
-		done chan struct{}
-	}
-
-	var (
-		slots  []writerSlot
-		nextID int
-	)
-
-	spawn := func() {
-		ww, err := warc.NewWriter(dir, nodeID, software)
-		if err != nil {
-			slog.Error("WARC scaler: failed to create writer", "error", err)
-			return
-		}
-		done := make(chan struct{})
-		id := nextID
-		nextID++
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer ww.Close()
-			for {
-				select {
-				case <-done:
-					return
-				case result, ok := <-ch:
-					if !ok {
-						return
-					}
-					if err := ww.WriteResult(result); err != nil {
-						slog.Warn("WARC write error", "error", err, "writer", id)
-						m.WARCWriteErrors.Inc()
-					}
-				}
-			}
-		}()
-		slots = append(slots, writerSlot{done: done})
-		m.WARCActiveWriters.Set(float64(len(slots)))
-		slog.Info("WARC scaler: writer started", "id", id, "active", len(slots))
-	}
-
-	shrink := func() {
-		if len(slots) <= minWriters {
-			return
-		}
-		last := slots[len(slots)-1]
-		close(last.done)
-		slots = slots[:len(slots)-1]
-		m.WARCActiveWriters.Set(float64(len(slots)))
-		slog.Info("WARC scaler: writer stopped", "active", len(slots))
-	}
-
-	// Spawn initial pool
-	for i := 0; i < minWriters; i++ {
-		spawn()
-	}
-
-	capacity := cap(ch)
-	lowTicks := 0
-
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			// Scaler exits; writers keep running until ch is closed by fan-out.
-			return
-		case <-ticker.C:
-			fill := len(ch)
-			pct := fill * 100 / capacity
-			current := len(slots)
-
-			switch {
-			case pct > 80 && current < maxWriters:
-				// Severe backpressure: spawn up to 4 at once
-				n := min(4, maxWriters-current)
-				for range n {
-					spawn()
-				}
-				lowTicks = 0
-			case pct > 50 && current < maxWriters:
-				// Moderate backpressure: spawn 1
-				spawn()
-				lowTicks = 0
-			case pct < 10 && current > minWriters:
-				lowTicks++
-				if lowTicks >= 6 { // 30s sustained low fill
-					shrink()
-					lowTicks = 0
-				}
-			default:
-				lowTicks = 0
-			}
 		}
 	}
 }

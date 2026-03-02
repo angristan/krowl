@@ -1,10 +1,13 @@
 // Package fetch implements the fetcher goroutine pool.
 // Fetchers pull domains from the frontier priority heap, respect rate
 // limits, check robots.txt, and send results to parsers via a channel.
+//
+// WARC recording is handled transparently by the gowarc HTTP client:
+// every request/response pair is captured at the transport layer via
+// TeeReader/MultiWriter wrapping on the TCP connection.
 package fetch
 
 import (
-	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -17,9 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/andybalholm/brotli"
-	"github.com/klauspost/compress/zstd"
-	"github.com/quic-go/quic-go/http3"
+	warc "github.com/internetarchive/gowarc"
 	"github.com/stanislas/krowl/internal/domain"
 	"github.com/stanislas/krowl/internal/frontier"
 	m "github.com/stanislas/krowl/internal/metrics"
@@ -33,27 +34,29 @@ const (
 	MaxBodySize  = 1 * 1024 * 1024 // 1MB
 	MaxRedirects = 5
 	MaxRetries   = 1 // retry transient errors once
-
-	// Connection pool tuning
-	maxIdleConns        = 1000 // total idle connections across all hosts
-	maxIdleConnsPerHost = 2    // keep-alive connections per domain
-	idleConnTimeout     = 90 * time.Second
-	tlsHandshakeTimeout = 10 * time.Second
-	dialTimeout         = 10 * time.Second
-	dialKeepAlive       = 30 * time.Second
 )
+
+// TLSInfo holds TLS connection state extracted by the patched gowarc dialer.
+// A pointer to this struct is stored in the request context before client.Do();
+// the DialTLSContext wrapper populates it via reflection on the utls connection.
+type TLSInfo struct {
+	Version     uint16
+	CipherSuite uint16
+	Set         bool // true if the dialer populated this
+}
+
+type tlsInfoKeyType struct{}
+
+// TLSInfoKey is the context key for *TLSInfo.
+var TLSInfoKey = tlsInfoKeyType{}
 
 // Result is the output of a successful fetch, sent to parsers.
 type Result struct {
-	URL            string
-	Domain         string
-	Depth          int // crawl depth (hops from seed)
-	Body           []byte
-	Status         int
-	Headers        http.Header
-	RequestHeaders http.Header // captured request headers for WARC request record
-	Method         string      // HTTP method (GET)
-	RequestURI     string      // path + query as sent in the request line
+	URL    string
+	Domain string
+	Depth  int // crawl depth (hops from seed)
+	Body   []byte
+	Status int
 }
 
 // Pool manages a pool of fetcher goroutines.
@@ -61,97 +64,20 @@ type Pool struct {
 	domains   *domain.Manager
 	frontier  *frontier.Frontier
 	results   chan<- Result
-	client    *http.Client
+	client    *warc.CustomHTTPClient
 	userAgent string
 	workers   int
-	zstdDec   *zstd.Decoder // shared decoder, safe for concurrent use via DecodeAll
 }
 
-// h3Transport wraps HTTP/1.1+2 and HTTP/3 transports.
-// First request to a host always uses TCP (HTTP/1.1 or HTTP/2).
-// If the response advertises Alt-Svc: h3, subsequent requests to that
-// host are attempted over QUIC, falling back to TCP on failure.
-type h3Transport struct {
-	tcp     *http.Transport
-	quic    *http3.Transport
-	h3Hosts sync.Map // host -> struct{}: hosts that advertised h3
-}
-
-func (t *h3Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	host := req.URL.Host
-
-	// If this host is known to support h3, try QUIC first.
-	if _, ok := t.h3Hosts.Load(host); ok {
-		resp, err := t.quic.RoundTrip(req)
-		if err == nil {
-			return resp, nil
+// NewPool creates a fetcher pool using a gowarc WARC-writing HTTP client.
+// The client handles WARC recording transparently at the transport layer.
+func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, client *warc.CustomHTTPClient, userAgent string, workers int) *Pool {
+	// Override redirect policy to match our max redirects.
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= MaxRedirects {
+			return fmt.Errorf("too many redirects")
 		}
-		// QUIC failed — forget h3 for this host, fall back to TCP.
-		t.h3Hosts.Delete(host)
-	}
-
-	// Standard HTTP/1.1 + HTTP/2 over TCP.
-	resp, err := t.tcp.RoundTrip(req)
-	if err != nil {
-		return nil, err
-	}
-
-	// Learn h3 support from Alt-Svc header.
-	if altSvc := resp.Header.Get("Alt-Svc"); strings.Contains(altSvc, "h3") {
-		t.h3Hosts.Store(host, struct{}{})
-	}
-
-	return resp, nil
-}
-
-// NewPool creates a fetcher pool with connection pooling.
-// DNS caching is handled by CoreDNS on localhost.
-func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, userAgent string, workers int) *Pool {
-	tcpTransport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   dialTimeout,
-			KeepAlive: dialKeepAlive,
-		}).DialContext,
-		MaxIdleConns:        maxIdleConns,
-		MaxIdleConnsPerHost: maxIdleConnsPerHost,
-		IdleConnTimeout:     idleConnTimeout,
-		TLSHandshakeTimeout: tlsHandshakeTimeout,
-		DisableCompression:  true, // we handle gzip/br/zstd ourselves
-		ForceAttemptHTTP2:   true, // negotiate HTTP/2 via ALPN
-	}
-
-	// HTTP/3 disabled temporarily — quic-go spawns ~13K goroutines
-	// (~100-200MB overhead) causing memory pressure on 8GB VMs.
-	// Uncomment to re-enable:
-	// quicTransport := &http3.Transport{
-	// 	TLSClientConfig: &tls.Config{
-	// 		MinVersion: tls.VersionTLS13,
-	// 	},
-	// }
-	// transport := &h3Transport{
-	// 	tcp:  tcpTransport,
-	// 	quic: quicTransport,
-	// }
-
-	client := &http.Client{
-		Timeout:   FetchTimeout,
-		Transport: tcpTransport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= MaxRedirects {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-	}
-
-	// Shared zstd decoder — safe for concurrent use via DecodeAll.
-	// WithDecoderMaxWindow limits memory per decompression to 8MB.
-	zd, err := zstd.NewReader(nil,
-		zstd.WithDecoderConcurrency(1),
-		zstd.WithDecoderMaxWindow(8<<20),
-	)
-	if err != nil {
-		panic(fmt.Sprintf("zstd decoder: %v", err))
+		return nil
 	}
 
 	return &Pool{
@@ -161,7 +87,6 @@ func NewPool(dm *domain.Manager, fr *frontier.Frontier, results chan<- Result, u
 		client:    client,
 		userAgent: userAgent,
 		workers:   workers,
-		zstdDec:   zd,
 	}
 }
 
@@ -301,29 +226,21 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	}
 	req.Header.Set("User-Agent", p.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Encoding", "gzip, br, zstd")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	// Note: Accept-Encoding is set by gowarc's transport (gzip).
+	// Manual decompression is no longer needed — gowarc handles it.
 
-	// Capture request headers before sending (for WARC request record)
-	reqHeaders := req.Header.Clone()
-
-	// httptrace: capture per-phase timings
+	// httptrace: capture per-phase timings.
+	// Note: gowarc does DNS and TLS in its custom dialer, so DNSStart/DNSDone
+	// and TLSHandshakeStart/TLSHandshakeDone do NOT fire. ConnectStart/ConnectDone
+	// and GotFirstResponseByte still work.
 	var (
-		dnsStart, connectStart, tlsStart time.Time
-		gotFirstByte                     time.Time
-		fetchStart                       = time.Now()
-		redirectCount                    int
+		connectStart  time.Time
+		fetchStart    = time.Now()
+		redirectCount int
 	)
 
 	trace := &httptrace.ClientTrace{
-		DNSStart: func(_ httptrace.DNSStartInfo) {
-			dnsStart = time.Now()
-		},
-		DNSDone: func(_ httptrace.DNSDoneInfo) {
-			if !dnsStart.IsZero() {
-				m.DNSDuration.Observe(time.Since(dnsStart).Seconds())
-			}
-		},
 		ConnectStart: func(_, addr string) {
 			connectStart = time.Now()
 			// Track IPv4 vs IPv6 from the resolved address (ip:port).
@@ -342,20 +259,16 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 				m.ConnectDuration.Observe(time.Since(connectStart).Seconds())
 			}
 		},
-		TLSHandshakeStart: func() {
-			tlsStart = time.Now()
-		},
-		TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
-			if !tlsStart.IsZero() {
-				m.TLSDuration.Observe(time.Since(tlsStart).Seconds())
-			}
-		},
 		GotFirstResponseByte: func() {
-			gotFirstByte = time.Now()
 			m.TTFBDuration.Observe(time.Since(fetchStart).Seconds())
 		},
 	}
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+
+	// Stash a TLSInfo pointer in context so the patched DialTLSContext can
+	// write TLS state into it (gowarc hides TLS state from resp.TLS).
+	tlsInfo := &TLSInfo{}
+	req = req.WithContext(context.WithValue(req.Context(), TLSInfoKey, tlsInfo))
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -363,6 +276,17 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	// TLS version and cipher suite.
+	// gowarc uses utls and wraps connections, so resp.TLS is always nil.
+	// Instead, the patched DialTLSContext extracts TLS state via reflection
+	// and writes it into the TLSInfo struct we stashed in the context.
+	if tlsInfo.Set {
+		m.TLSVersion.WithLabelValues(tlsVersionName(tlsInfo.Version)).Inc()
+		m.TLSCipher.WithLabelValues(tls.CipherSuiteName(tlsInfo.CipherSuite)).Inc()
+	} else if req.URL.Scheme == "https" {
+		m.TLSVersion.WithLabelValues("unknown").Inc()
+	}
 
 	// Count redirects by walking the response chain
 	if resp.Request != nil {
@@ -373,24 +297,24 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 			}
 		}
 	}
-	_ = gotFirstByte // used in trace callback
 
 	// Record status
 	m.PagesFetched.WithLabelValues(m.StatusBucket(resp.StatusCode)).Inc()
 
-	// HTTP protocol version
+	// HTTP protocol version (always HTTP/1.1 with gowarc — HTTP/2 disabled
+	// because WARC recording requires per-connection TeeReader wrapping)
 	m.HTTPVersion.WithLabelValues(resp.Proto).Inc()
 
 	// URL scheme (http vs https)
 	m.URLScheme.WithLabelValues(req.URL.Scheme).Inc()
 
-	// TLS version and cipher suite
-	if resp.TLS != nil {
-		m.TLSVersion.WithLabelValues(tlsVersionName(resp.TLS.Version)).Inc()
-		m.TLSCipher.WithLabelValues(tls.CipherSuiteName(resp.TLS.CipherSuite)).Inc()
-	} else {
-		m.TLSVersion.WithLabelValues("none").Inc()
+	// Response content encoding (gowarc decompresses transparently,
+	// but the Content-Encoding header is still present)
+	encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
+	if encoding == "" {
+		encoding = "none"
 	}
+	m.ResponseEncoding.WithLabelValues(encoding).Inc()
 
 	// Content type tracking
 	ct := resp.Header.Get("Content-Type")
@@ -403,59 +327,9 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 		return nil, fmt.Errorf("%w: non-html content type: %s", errNonRetryable, ct)
 	}
 
-	// Decompress response body based on Content-Encoding.
-	// We advertise Accept-Encoding: gzip, br, zstd and handle decompression ourselves
-	// so WARC stores usable (decompressed) content.
-	bodyReader := io.Reader(resp.Body)
-	encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
-	switch encoding {
-	case "gzip", "x-gzip":
-		gr, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			m.FetchErrors.WithLabelValues("decompress").Inc()
-			return nil, fmt.Errorf("gzip reader: %w", err)
-		}
-		defer gr.Close()
-		bodyReader = gr
-		m.ResponseEncoding.WithLabelValues("gzip").Inc()
-	case "br":
-		bodyReader = brotli.NewReader(resp.Body)
-		m.ResponseEncoding.WithLabelValues("br").Inc()
-	case "zstd":
-		// Use shared decoder — read compressed data first, then decode.
-		compressed, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodySize))
-		if err != nil {
-			m.FetchErrors.WithLabelValues("body_read").Inc()
-			return nil, err
-		}
-		decoded, err := p.zstdDec.DecodeAll(compressed, nil)
-		if err != nil {
-			m.FetchErrors.WithLabelValues("decompress").Inc()
-			return nil, fmt.Errorf("zstd decode: %w", err)
-		}
-		m.ResponseEncoding.WithLabelValues("zstd").Inc()
-		// Skip the normal body read below — we already have the decoded bytes.
-		body := decoded
-		if int64(len(body)) > MaxBodySize {
-			body = body[:MaxBodySize]
-		}
-		totalDuration := time.Since(fetchStart).Seconds()
-		m.FetchDuration.Observe(totalDuration)
-		m.ResponseSize.Observe(float64(len(body)))
-		m.RedirectsFollowed.Observe(float64(redirectCount))
-		requestURI := req.URL.RequestURI()
-		return &Result{
-			URL: rawURL, Domain: d, Body: body, Status: resp.StatusCode,
-			Headers: resp.Header, RequestHeaders: reqHeaders,
-			Method: req.Method, RequestURI: requestURI,
-		}, nil
-	case "":
-		m.ResponseEncoding.WithLabelValues("none").Inc()
-	default:
-		m.ResponseEncoding.WithLabelValues("other").Inc()
-	}
-
-	body, err := io.ReadAll(io.LimitReader(bodyReader, MaxBodySize))
+	// Read body. gowarc has already decompressed gzip at the transport level.
+	// Reading resp.Body also drives the TeeReader that feeds WARC recording.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodySize))
 	if err != nil {
 		m.FetchErrors.WithLabelValues("body_read").Inc()
 		return nil, err
@@ -467,18 +341,11 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	m.ResponseSize.Observe(float64(len(body)))
 	m.RedirectsFollowed.Observe(float64(redirectCount))
 
-	// Build request URI (path + query)
-	requestURI := req.URL.RequestURI()
-
 	return &Result{
-		URL:            rawURL,
-		Domain:         d,
-		Body:           body,
-		Status:         resp.StatusCode,
-		Headers:        resp.Header,
-		RequestHeaders: reqHeaders,
-		Method:         req.Method,
-		RequestURI:     requestURI,
+		URL:    rawURL,
+		Domain: d,
+		Body:   body,
+		Status: resp.StatusCode,
 	}, nil
 }
 
