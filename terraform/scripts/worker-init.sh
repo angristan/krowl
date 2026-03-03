@@ -310,6 +310,55 @@ EOF
 
 consul reload || true
 
+# --- URL queue sync scripts ---
+# Local disk for performance, JuiceFS for durability.
+# ExecStartPre restores from JuiceFS if its copy is newer.
+# ExecStopPost backs up to JuiceFS after graceful shutdown.
+
+cat >/usr/local/bin/urlqueue-restore.sh <<'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+LOCAL="/var/lib/krowl/urlqueue"
+REMOTE="/mnt/jfs/data/worker-$1/urlqueue"
+mkdir -p "$LOCAL"
+
+if [ ! -d "$REMOTE" ]; then
+    echo "urlqueue: no JuiceFS backup, starting fresh"
+    exit 0
+fi
+
+# Compare mtime of CURRENT file (Pebble updates this on every open/compaction)
+LOCAL_MT=0
+REMOTE_MT=0
+[ -f "$LOCAL/CURRENT" ] && LOCAL_MT=$(stat -c %Y "$LOCAL/CURRENT")
+[ -f "$REMOTE/CURRENT" ] && REMOTE_MT=$(stat -c %Y "$REMOTE/CURRENT")
+
+if [ "$REMOTE_MT" -gt "$LOCAL_MT" ]; then
+    echo "urlqueue: JuiceFS is newer (remote=$REMOTE_MT local=$LOCAL_MT), restoring"
+    rsync -a --delete "$REMOTE/" "$LOCAL/"
+else
+    echo "urlqueue: local is newer or equal (remote=$REMOTE_MT local=$LOCAL_MT), keeping local"
+fi
+SCRIPT
+
+cat >/usr/local/bin/urlqueue-backup.sh <<'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+LOCAL="/var/lib/krowl/urlqueue"
+REMOTE="/mnt/jfs/data/worker-$1/urlqueue"
+
+if [ ! -d "$LOCAL" ] || [ ! -f "$LOCAL/CURRENT" ]; then
+    echo "urlqueue: nothing to back up"
+    exit 0
+fi
+
+mkdir -p "$REMOTE"
+rsync -a --delete "$LOCAL/" "$REMOTE/"
+echo "urlqueue: backed up to JuiceFS"
+SCRIPT
+
+chmod +x /usr/local/bin/urlqueue-restore.sh /usr/local/bin/urlqueue-backup.sh
+
 # --- Crawler systemd unit ---
 cat >/etc/systemd/system/crawler.service <<EOF
 [Unit]
@@ -319,6 +368,7 @@ Wants=network-online.target
 Requires=consul.service redis-server.service juicefs.service
 
 [Service]
+ExecStartPre=/usr/local/bin/urlqueue-restore.sh ${node_id}
 ExecStart=/usr/local/bin/crawler \
   --node-id=${node_id} \
   --seeds=/mnt/jfs/seeds/top100k.txt \
@@ -327,13 +377,14 @@ ExecStart=/usr/local/bin/crawler \
   --consul=localhost:8500 \
   --metrics-port=9090 \
   --warc-dir=/mnt/jfs/warcs \
-  --checkpoint=/mnt/jfs/data/worker-${node_id}/frontier.ckpt \
+  --urlqueue=/var/lib/krowl/urlqueue \
   --pyroscope=http://${master_private_ip}:4040
+ExecStopPost=/usr/local/bin/urlqueue-backup.sh ${node_id}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
 KillSignal=SIGTERM
-TimeoutStopSec=60
+TimeoutStopSec=120
 StandardOutput=journal
 StandardError=journal
 
