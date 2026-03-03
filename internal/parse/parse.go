@@ -6,7 +6,6 @@ package parse
 import (
 	"bytes"
 	"context"
-	"hash/fnv"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -56,9 +55,7 @@ type domainHash struct {
 }
 
 func (ct *contentTracker) isDuplicate(domain string, body []byte) bool {
-	h := fnv.New64a()
-	h.Write(body)
-	key := domainHash{domain: domain, hash: h.Sum64()}
+	key := domainHash{domain: domain, hash: fnv64a(body)}
 
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
@@ -76,6 +73,20 @@ func (ct *contentTracker) isDuplicate(domain string, body []byte) bool {
 
 	ct.counts[key]++
 	return ct.counts[key] >= soft404Threshold
+}
+
+// fnv64a computes FNV-64a hash inline, avoiding the allocation of fnv.New64a().
+func fnv64a(data []byte) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	for _, b := range data {
+		h ^= uint64(b)
+		h *= prime64
+	}
+	return h
 }
 
 // NewPool creates a parser pool.

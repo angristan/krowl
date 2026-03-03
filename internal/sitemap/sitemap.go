@@ -1,10 +1,14 @@
 // Package sitemap fetches and parses XML sitemaps to discover URLs.
 // Handles both regular sitemaps and sitemap index files.
-// Uses streaming xml.Decoder to avoid loading full DOM into memory.
+//
+// Uses a lightweight byte-level parser instead of encoding/xml to avoid
+// the massive allocation overhead of xml.Decoder (~30% of total alloc_objects
+// in profiling). Sitemaps have a trivial structure: we only need <loc>
+// text from <url> or <sitemap> elements.
 package sitemap
 
 import (
-	"encoding/xml"
+	"bytes"
 	"fmt"
 	"io"
 	"log/slog"
@@ -83,140 +87,148 @@ func (f *Fetcher) fetchSitemap(url string, depth int) []string {
 	}
 	defer func() { _ = body.Close() }()
 
-	return f.streamParse(body, depth)
-}
-
-// streamParse uses xml.Decoder to parse a sitemap without loading the full
-// DOM into memory. It detects the root element to distinguish sitemap index
-// files (<sitemapindex>) from regular sitemaps (<urlset>), then streams
-// child elements extracting <loc> values.
-func (f *Fetcher) streamParse(r io.Reader, depth int) []string {
-	dec := xml.NewDecoder(r)
-	// Disable strict mode to tolerate malformed sitemaps
-	dec.Strict = false
-
-	// Find the root element to determine sitemap type
-	var rootName string
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			return nil
-		}
-		if se, ok := tok.(xml.StartElement); ok {
-			rootName = se.Name.Local
-			break
-		}
-	}
-
-	switch rootName {
-	case "sitemapindex":
-		return f.parseIndex(dec, depth)
-	case "urlset":
-		return f.parseURLSet(dec)
-	default:
+	// Read entire body (capped at MaxSitemapSize) for byte-level parsing.
+	data, err := io.ReadAll(body)
+	if err != nil {
 		return nil
 	}
+
+	return f.parseSitemap(data, depth)
 }
 
-// parseIndex streams a <sitemapindex>, extracting <loc> from each <sitemap>
-// child and recursively fetching them.
-func (f *Fetcher) parseIndex(dec *xml.Decoder, depth int) []string {
+// parseSitemap detects the sitemap type (urlset vs sitemapindex) and
+// extracts <loc> values using byte-level scanning. This avoids the
+// encoding/xml decoder which was 30% of total allocation objects.
+func (f *Fetcher) parseSitemap(data []byte, depth int) []string {
+	// Detect root element
+	isSitemapIndex := bytes.Contains(data[:min(len(data), 512)], []byte("<sitemapindex"))
+
+	if isSitemapIndex {
+		return f.parseIndexBytes(data, depth)
+	}
+	return f.parseURLSetBytes(data)
+}
+
+// parseURLSetBytes extracts <loc> values from <url> elements using byte scanning.
+func (f *Fetcher) parseURLSetBytes(data []byte) []string {
 	var urls []string
-
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			break // EOF or error
+	pos := 0
+	for pos < len(data) {
+		loc := extractLocFromTag(data, &pos, "url")
+		if loc == "" {
+			break
 		}
-
-		se, ok := tok.(xml.StartElement)
-		if !ok {
-			continue
-		}
-
-		if se.Name.Local == "sitemap" {
-			loc := extractLoc(dec, "sitemap")
-			if loc != "" {
-				child := f.fetchSitemap(loc, depth+1)
-				urls = append(urls, child...)
-				if len(urls) >= MaxURLsPerSite {
-					return urls[:MaxURLsPerSite]
-				}
+		if strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://") {
+			urls = append(urls, loc)
+			if len(urls) >= MaxURLsPerSite {
+				return urls
 			}
 		}
 	}
 	return urls
 }
 
-// parseURLSet streams a <urlset>, extracting <loc> from each <url> child.
-func (f *Fetcher) parseURLSet(dec *xml.Decoder) []string {
+// parseIndexBytes extracts <loc> values from <sitemap> elements in a
+// sitemap index and recursively fetches child sitemaps.
+func (f *Fetcher) parseIndexBytes(data []byte, depth int) []string {
 	var urls []string
-
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			break // EOF or error
+	pos := 0
+	for pos < len(data) {
+		loc := extractLocFromTag(data, &pos, "sitemap")
+		if loc == "" {
+			break
 		}
-
-		se, ok := tok.(xml.StartElement)
-		if !ok {
-			continue
-		}
-
-		if se.Name.Local == "url" {
-			loc := extractLoc(dec, "url")
-			if loc != "" && (strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://")) {
-				urls = append(urls, loc)
-				if len(urls) >= MaxURLsPerSite {
-					return urls
-				}
-			}
+		child := f.fetchSitemap(loc, depth+1)
+		urls = append(urls, child...)
+		if len(urls) >= MaxURLsPerSite {
+			return urls[:MaxURLsPerSite]
 		}
 	}
 	return urls
 }
 
-// extractLoc reads inside a parent element (e.g. <url> or <sitemap>) and
-// returns the text content of the first <loc> child. Consumes tokens until
-// the matching end element.
-func extractLoc(dec *xml.Decoder, parent string) string {
-	var loc string
-	depth := 1
+// extractLocFromTag finds the next <tag>...</tag> block starting at *pos
+// and extracts the text content of its first <loc>...</loc> child.
+// Advances *pos past the closing </tag>. Returns "" if no more tags found.
+func extractLocFromTag(data []byte, pos *int, tag string) string {
+	openTag := []byte("<" + tag)
+	closeTag := []byte("</" + tag + ">")
 
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			return loc
+	// Find opening tag
+	idx := indexCaseInsensitive(data[*pos:], openTag)
+	if idx < 0 {
+		*pos = len(data)
+		return ""
+	}
+	start := *pos + idx
+
+	// Find closing tag
+	end := indexCaseInsensitive(data[start:], closeTag)
+	if end < 0 {
+		*pos = len(data)
+		return ""
+	}
+	block := data[start : start+end]
+	*pos = start + end + len(closeTag)
+
+	// Extract <loc>...</loc> within the block
+	return extractLocText(block)
+}
+
+// extractLocText extracts the text content of the first <loc>...</loc>
+// within a byte slice. Returns "" if not found.
+func extractLocText(block []byte) string {
+	locOpen := []byte("<loc>")
+	locClose := []byte("</loc>")
+
+	start := indexCaseInsensitive(block, locOpen)
+	if start < 0 {
+		return ""
+	}
+	start += len(locOpen)
+
+	end := indexCaseInsensitive(block[start:], locClose)
+	if end < 0 {
+		return ""
+	}
+
+	loc := string(bytes.TrimSpace(block[start : start+end]))
+
+	// Handle CDATA: <loc><![CDATA[...]]></loc>
+	if strings.HasPrefix(loc, "<![CDATA[") && strings.HasSuffix(loc, "]]>") {
+		loc = loc[9 : len(loc)-3]
+		loc = strings.TrimSpace(loc)
+	}
+
+	return loc
+}
+
+// indexCaseInsensitive finds needle in haystack with case-insensitive
+// matching for ASCII tag names. For our use case (XML tags), this is
+// sufficient and avoids allocating lowercased copies.
+func indexCaseInsensitive(haystack, needle []byte) int {
+	if len(needle) > len(haystack) {
+		return -1
+	}
+	// Fast path: try exact match first (most sitemaps use lowercase)
+	if idx := bytes.Index(haystack, needle); idx >= 0 {
+		return idx
+	}
+	// Slow path: case-insensitive scan
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		match := true
+		for j := range needle {
+			a, b := haystack[i+j], needle[j]
+			if a != b && a|0x20 != b|0x20 {
+				match = false
+				break
+			}
 		}
-
-		switch t := tok.(type) {
-		case xml.StartElement:
-			depth++
-			if t.Name.Local == "loc" {
-				// Read the text content of <loc>
-				var content string
-				for {
-					inner, err := dec.Token()
-					if err != nil {
-						return ""
-					}
-					if cd, ok := inner.(xml.CharData); ok {
-						content += string(cd)
-					}
-					if _, ok := inner.(xml.EndElement); ok {
-						depth--
-						break
-					}
-				}
-				loc = strings.TrimSpace(content)
-			}
-		case xml.EndElement:
-			depth--
-			if depth == 0 && t.Name.Local == parent {
-				return loc
-			}
+		if match {
+			return i
 		}
 	}
+	return -1
 }
 
 // fetch downloads a sitemap URL, returning the response body as a reader.
