@@ -923,7 +923,8 @@
           "placement": "bottom",
           "calcs": [
             "mean",
-            "max"
+            "max",
+            "lastNotNull"
           ]
         }
       }
