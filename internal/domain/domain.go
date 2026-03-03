@@ -709,12 +709,6 @@ func (m *Manager) RestoreAllState() int {
 
 const stateEncodingSize = 46
 
-func encodeState(s *State) []byte {
-	buf := make([]byte, stateEncodingSize)
-	encodeStateBuf(s, buf)
-	return buf
-}
-
 // encodeStateBuf encodes domain state into an existing buffer (must be >= stateEncodingSize).
 // Used by SaveAllState to reuse a single buffer across 1M+ domains.
 func encodeStateBuf(s *State, buf []byte) {
