@@ -28,7 +28,6 @@ import (
 
 	warc "github.com/internetarchive/gowarc"
 
-	"github.com/stanislas/krowl/internal/checkpoint"
 	"github.com/stanislas/krowl/internal/dedup"
 	"github.com/stanislas/krowl/internal/domain"
 	"github.com/stanislas/krowl/internal/fetch"
@@ -37,6 +36,7 @@ import (
 	m "github.com/stanislas/krowl/internal/metrics"
 	"github.com/stanislas/krowl/internal/parse"
 	"github.com/stanislas/krowl/internal/ring"
+	"github.com/stanislas/krowl/internal/urlqueue"
 )
 
 const userAgent = "krowl/1.0 (+https://github.com/stanislas/krowl; crawl@stanislas.blog)"
@@ -56,8 +56,7 @@ func main() {
 		metricsPort     = flag.Int("metrics-port", 9090, "Prometheus metrics port")
 		expectedURLs    = flag.Int("expected-urls", 50_000_000, "Expected total URLs for bloom filter sizing")
 		warcDir         = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
-		checkpointPath  = flag.String("checkpoint", "/mnt/jfs/data/frontier.ckpt", "Path for frontier checkpoint file")
-		checkpointSec   = flag.Int("checkpoint-interval", 30, "Seconds between periodic frontier checkpoints (0 to disable)")
+		urlqueuePath    = flag.String("urlqueue", "/mnt/jfs/data/urlqueue", "Path to Pebble-backed URL queue")
 		fetchWorkersF   = flag.Int("fetch-workers", 200, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
 		parseWorkersMax = flag.Int("parse-workers-max", 16, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
@@ -171,8 +170,17 @@ func main() {
 	}
 	slog.Info("bloom filter warmed from Pebble", "urls", nWarmed, "duration", time.Since(warmStart))
 
+	// URL queue (Pebble-backed per-domain URL queues — replaces in-memory slices + checkpoint file)
+	uq, err := urlqueue.Open(*urlqueuePath)
+	if err != nil {
+		slog.Error("failed to open URL queue", "error", err)
+		os.Exit(1)
+	}
+	defer func() { _ = uq.Close() }()
+	slog.Info("URL queue opened", "path", *urlqueuePath, "queued_urls", uq.TotalLen(), "domains", uq.DomainCount())
+
 	// Domain manager
-	dm := domain.NewManager(userAgent, *maxFrontier)
+	dm := domain.NewManager(userAgent, *maxFrontier, uq)
 
 	// Frontier priority heap (replaces O(n) domain scan with O(log n) heap)
 	fr := frontier.New()
@@ -234,14 +242,6 @@ func main() {
 			_ = rdb.Close()
 		}
 	}()
-
-	// Restore frontier from checkpoint (if any)
-	ckptQueues, err := checkpoint.Load(*checkpointPath)
-	if err != nil {
-		slog.Warn("failed to load checkpoint, starting fresh", "error", err)
-	} else if len(ckptQueues) > 0 {
-		dm.RestoreQueues(ckptQueues)
-	}
 
 	// Load seed domains for this node
 	loadSeeds(*seedFile, hashRing, *nodeID, dm)
@@ -321,11 +321,6 @@ func main() {
 	// Metrics + health server
 	go serveHTTP(*metricsPort)
 
-	// Periodic frontier checkpoint
-	if *checkpointSec > 0 {
-		go periodicCheckpoint(ctx, dm, *checkpointPath, time.Duration(*checkpointSec)*time.Second)
-	}
-
 	// Distributed-only goroutines
 	if !*standalone {
 		// Consul registration was done before seed loading; defer deregistration
@@ -366,11 +361,6 @@ func main() {
 	slog.Info("flushing WARC writers")
 	if err := warcClient.Close(); err != nil {
 		slog.Error("gowarc close error", "error", err)
-	}
-
-	// Final frontier checkpoint
-	if err := checkpoint.Save(*checkpointPath, dm.Snapshot()); err != nil {
-		slog.Error("failed to save final checkpoint", "error", err)
 	}
 
 	slog.Info("krowl shutdown complete")
@@ -586,22 +576,6 @@ func serveHTTP(port int) {
 	slog.Info("HTTP server starting", "port", port, "endpoints", "/metrics, /health")
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), mux); err != nil {
 		slog.Error("HTTP server error", "error", err)
-	}
-}
-
-// periodicCheckpoint saves the frontier to disk at regular intervals.
-func periodicCheckpoint(ctx context.Context, dm *domain.Manager, path string, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := checkpoint.Save(path, dm.Snapshot()); err != nil {
-				slog.Error("periodic checkpoint failed", "error", err)
-			}
-		}
 	}
 }
 
