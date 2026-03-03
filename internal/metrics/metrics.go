@@ -38,7 +38,7 @@ var (
 	// Total pages fetched, by status code bucket
 	PagesFetched = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Name: "pages_fetched_total",
-		Help: "Total pages fetched, by HTTP status class",
+		Help: "Total pages fetched, by exact HTTP status code",
 	}, []string{"status"})
 
 	// Fetch errors by type
@@ -429,20 +429,4 @@ func Register() {
 
 	// Pipeline channels
 	prometheus.MustRegister(ChanParse)
-}
-
-// StatusBucket returns a label for HTTP status grouping: "2xx", "3xx", etc.
-func StatusBucket(code int) string {
-	switch {
-	case code < 200:
-		return "1xx"
-	case code < 300:
-		return "2xx"
-	case code < 400:
-		return "3xx"
-	case code < 500:
-		return "4xx"
-	default:
-		return "5xx"
-	}
 }

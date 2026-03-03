@@ -61,6 +61,7 @@ func main() {
 		fetchWorkersF   = flag.Int("fetch-workers", 750, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
 		parseWorkersMax = flag.Int("parse-workers-max", 64, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
+		parseChanSize   = flag.Int("parse-chan-size", 500, "Buffer size of the fetch→parse channel")
 		warcPoolSize    = flag.Int("warc-pool-size", 16, "Number of concurrent WARC writer goroutines (gowarc pool)")
 		warcSizeMB      = flag.Float64("warc-size-mb", 1024, "Max WARC file size in MB before rotation")
 		warcTempDir     = flag.String("warc-temp-dir", "/tmp/krowl-warc", "Temp directory for gowarc spooled files")
@@ -320,7 +321,7 @@ func main() {
 
 	// Channels — simplified: fetch writes directly to parse channel.
 	// No fan-out or WARC channel needed (gowarc records at transport layer).
-	fetchResults := make(chan fetch.Result, 100)
+	fetchResults := make(chan fetch.Result, *parseChanSize)
 
 	// Parse pool (metrics are wired directly to the centralized metrics package)
 	parsePool := parse.NewPool(fetchResults, dd, dm, sender, hashRing, *nodeID, parseMin)
