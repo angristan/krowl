@@ -45,7 +45,11 @@ type Queue struct {
 // If the database already contains data, in-memory counters are rebuilt
 // from a full scan.
 func Open(path string) (*Queue, error) {
+	cache := pebble.NewCache(256 * 1024 * 1024) // 256MB block cache
+	defer cache.Unref()
+
 	db, err := pebble.Open(path, &pebble.Options{
+		Cache:                       cache,
 		MemTableSize:                64 << 20, // 64MB
 		MemTableStopWritesThreshold: 4,
 		MaxConcurrentCompactions:    func() int { return 2 },

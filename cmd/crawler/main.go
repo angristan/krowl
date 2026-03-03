@@ -58,10 +58,10 @@ func main() {
 		expectedURLs    = flag.Int("expected-urls", 50_000_000, "Expected total URLs for bloom filter sizing")
 		warcDir         = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
 		urlqueuePath    = flag.String("urlqueue", "/mnt/jfs/data/urlqueue", "Path to Pebble-backed URL queue")
-		fetchWorkersF   = flag.Int("fetch-workers", 500, "Number of fetcher goroutines (I/O-bound, set high)")
+		fetchWorkersF   = flag.Int("fetch-workers", 750, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
 		parseWorkersMax = flag.Int("parse-workers-max", 64, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
-		warcPoolSize    = flag.Int("warc-pool-size", 4, "Number of concurrent WARC writer goroutines (gowarc pool)")
+		warcPoolSize    = flag.Int("warc-pool-size", 16, "Number of concurrent WARC writer goroutines (gowarc pool)")
 		warcSizeMB      = flag.Float64("warc-size-mb", 1024, "Max WARC file size in MB before rotation")
 		warcTempDir     = flag.String("warc-temp-dir", "/tmp/krowl-warc", "Temp directory for gowarc spooled files")
 		warcOnDisk      = flag.Bool("warc-on-disk", false, "Write WARC payloads to disk instead of RAM (reduces memory, slower)")
@@ -295,6 +295,11 @@ func main() {
 		VerifyCerts:           false,
 		FullOnDisk:            *warcOnDisk,
 		DNSServers:            []string{"127.0.0.1"}, // Use local CoreDNS (port from resolv.conf, default 53)
+		DialTimeout:           2 * time.Second,       // Fast-fail dead hosts at TCP connect
+		TLSHandshakeTimeout:   2 * time.Second,       // Fast-fail broken TLS
+		ResponseHeaderTimeout: 3 * time.Second,       // Server must start responding within 3s
+		DNSCacheSize:          500_000,               // Cache DNS for ~500K domains (vs default 10K)
+		DNSRecordsTTL:         1 * time.Hour,         // Cache DNS 1h (vs default 5min) — fewer lookups = fewer WARC writes
 	})
 	if err != nil {
 		slog.Error("failed to create WARC HTTP client", "error", err)
