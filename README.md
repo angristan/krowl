@@ -94,6 +94,17 @@ Workers (s-4vcpu-8gb-amd x N): Crawler, local Redis, Pebble, JuiceFS -> DO Space
 Networking: VPC 10.100.0.0/16, public inbound blocked, Tailscale for management
 ```
 
+## Grafana Dashboard
+
+![](docs/images/grafana-01.png)
+![](docs/images/grafana-02.png)
+![](docs/images/grafana-03.png)
+![](docs/images/grafana-04.png)
+![](docs/images/grafana-05.png)
+![](docs/images/grafana-06.png)
+![](docs/images/grafana-07.png)
+![](docs/images/grafana-08.png)
+
 ## Inspiration
 
 - https://andrewkchan.dev/posts/crawler.html
