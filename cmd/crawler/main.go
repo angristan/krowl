@@ -57,7 +57,7 @@ func main() {
 		expectedURLs    = flag.Int("expected-urls", 50_000_000, "Expected total URLs for bloom filter sizing")
 		warcDir         = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
 		urlqueuePath    = flag.String("urlqueue", "/mnt/jfs/data/urlqueue", "Path to Pebble-backed URL queue")
-		fetchWorkersF   = flag.Int("fetch-workers", 200, "Number of fetcher goroutines (I/O-bound, set high)")
+		fetchWorkersF   = flag.Int("fetch-workers", 500, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
 		parseWorkersMax = flag.Int("parse-workers-max", 16, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
 		warcPoolSize    = flag.Int("warc-pool-size", 4, "Number of concurrent WARC writer goroutines (gowarc pool)")
