@@ -59,6 +59,12 @@ var (
 		Help: "Transient fetch errors that triggered a retry",
 	})
 
+	// 429 rate-limited responses that triggered domain backoff + re-enqueue
+	RateLimited = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: ns, Name: "rate_limited_total",
+		Help: "429 Too Many Requests responses (URL re-enqueued, domain backed off)",
+	})
+
 	// Domains permanently abandoned
 	DomainsDead = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: ns, Name: "domains_dead_total",
@@ -381,7 +387,7 @@ var (
 func Register() {
 	// Fetch / HTTP
 	prometheus.MustRegister(
-		PagesFetched, FetchErrors, NetworkErrors, FetchRetries, DomainsDead, FetchDuration,
+		PagesFetched, FetchErrors, NetworkErrors, FetchRetries, RateLimited, DomainsDead, FetchDuration,
 		DNSDuration, ConnectDuration, TLSDuration, TTFBDuration,
 		ResponseSize, ContentTypes, RedirectsFollowed, RobotsBlocked,
 		HTTPVersion, URLScheme, TLSVersion, TLSCipher, IPVersion, ResponseEncoding,
