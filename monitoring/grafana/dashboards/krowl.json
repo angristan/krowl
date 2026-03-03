@@ -27,7 +27,7 @@
   "timezone": "utc",
   "title": "krowl Crawler",
   "uid": "krowl-overview",
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "templating": {
     "list": [
@@ -903,7 +903,7 @@
         "defaults": {
           "unit": "short",
           "min": 0,
-          "max": 10000,
+          "max": 100,
           "custom": {
             "fillOpacity": 10,
             "lineWidth": 1,
@@ -4388,7 +4388,7 @@
       "targets": [
         {
           "expr": "krowl_pebble_disk_usage_bytes{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}}",
+          "legendFormat": "{{instance}} {{db}}",
           "refId": "A"
         }
       ],
@@ -4433,12 +4433,12 @@
       "targets": [
         {
           "expr": "krowl_pebble_l0_files{instance=~\"$instance\"}",
-          "legendFormat": "L0 Files",
+          "legendFormat": "L0 Files {{db}}",
           "refId": "A"
         },
         {
           "expr": "krowl_pebble_l0_sublevels{instance=~\"$instance\"}",
-          "legendFormat": "L0 Sublevels",
+          "legendFormat": "L0 Sublevels {{db}}",
           "refId": "B"
         }
       ],
@@ -4483,7 +4483,7 @@
       "targets": [
         {
           "expr": "krowl_pebble_read_amp{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}}",
+          "legendFormat": "{{instance}} {{db}}",
           "refId": "A"
         }
       ],
@@ -4528,7 +4528,7 @@
       "targets": [
         {
           "expr": "krowl_pebble_compaction_debt_bytes{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}}",
+          "legendFormat": "{{instance}} {{db}}",
           "refId": "A"
         }
       ],
@@ -4573,7 +4573,7 @@
       "targets": [
         {
           "expr": "krowl_pebble_memtable_size_bytes{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}}",
+          "legendFormat": "{{instance}} {{db}}",
           "refId": "A"
         }
       ],
@@ -4618,7 +4618,7 @@
       "targets": [
         {
           "expr": "krowl_pebble_total_keys{instance=~\"$instance\"}",
-          "legendFormat": "{{instance}}",
+          "legendFormat": "{{instance}} {{db}}",
           "refId": "A"
         }
       ],
