@@ -3,8 +3,10 @@
 package domain
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -400,6 +402,109 @@ func (m *Manager) fetchRobots(domain string) (string, error) {
 		return "", err
 	}
 	return string(body), nil
+}
+
+// SaveAllState persists metadata for all tracked domains to the URL queue's
+// Pebble store. Called periodically and on shutdown.
+func (m *Manager) SaveAllState() int {
+	m.mu.RLock()
+	// Snapshot domain names + state under read lock
+	type entry struct {
+		domain string
+		data   []byte
+	}
+	entries := make([]entry, 0, len(m.domains))
+	for d, s := range m.domains {
+		data := encodeState(s)
+		entries = append(entries, entry{domain: d, data: data})
+	}
+	m.mu.RUnlock()
+
+	for _, e := range entries {
+		m.queue.SaveMeta(e.domain, e.data)
+	}
+	return len(entries)
+}
+
+// RestoreAllState loads persisted domain metadata from Pebble and
+// populates the in-memory domain map. Should be called at startup
+// before any fetchers begin.
+func (m *Manager) RestoreAllState() int {
+	count := 0
+	m.queue.IterMeta(func(d string, data []byte) {
+		s := decodeState(data)
+		if s == nil {
+			return
+		}
+		m.mu.Lock()
+		m.domains[d] = s
+		m.mu.Unlock()
+		count++
+	})
+	slog.Info("domain state restored", "domains", count)
+	return count
+}
+
+// Domain state binary encoding (version 1):
+//
+//	byte 0:       version (1)
+//	byte 1:       flags (bit 0: Dead, bit 1: SitemapChecked)
+//	bytes 2-9:    CrawlDelay (int64 nanoseconds)
+//	bytes 10-17:  RobotsCrawlDelay (int64 nanoseconds)
+//	bytes 18-25:  AvgLatency (int64 nanoseconds)
+//	bytes 26-33:  LastFetch (int64 unix nano)
+//	bytes 34-41:  BackoffUntil (int64 unix nano)
+//	bytes 42-45:  ConsecutiveErrors (int32)
+//
+// Total: 46 bytes per domain.
+
+const stateEncodingSize = 46
+
+func encodeState(s *State) []byte {
+	buf := make([]byte, stateEncodingSize)
+	buf[0] = 1 // version
+
+	var flags byte
+	if s.Dead {
+		flags |= 0x01
+	}
+	if s.SitemapChecked {
+		flags |= 0x02
+	}
+	buf[1] = flags
+
+	binary.LittleEndian.PutUint64(buf[2:], uint64(s.CrawlDelay))
+	binary.LittleEndian.PutUint64(buf[10:], uint64(s.RobotsCrawlDelay))
+	binary.LittleEndian.PutUint64(buf[18:], uint64(s.AvgLatency))
+	binary.LittleEndian.PutUint64(buf[26:], uint64(s.LastFetch.UnixNano()))
+	binary.LittleEndian.PutUint64(buf[34:], uint64(s.BackoffUntil.UnixNano()))
+	binary.LittleEndian.PutUint32(buf[42:], uint32(s.ConsecutiveErrors))
+	return buf
+}
+
+func decodeState(data []byte) *State {
+	if len(data) < stateEncodingSize || data[0] != 1 {
+		return nil
+	}
+
+	flags := data[1]
+	s := &State{
+		Dead:              flags&0x01 != 0,
+		SitemapChecked:    flags&0x02 != 0,
+		CrawlDelay:        time.Duration(binary.LittleEndian.Uint64(data[2:])),
+		RobotsCrawlDelay:  time.Duration(binary.LittleEndian.Uint64(data[10:])),
+		AvgLatency:        time.Duration(binary.LittleEndian.Uint64(data[18:])),
+		LastFetch:         time.Unix(0, int64(binary.LittleEndian.Uint64(data[26:]))),
+		BackoffUntil:      time.Unix(0, int64(binary.LittleEndian.Uint64(data[34:]))),
+		ConsecutiveErrors: int(binary.LittleEndian.Uint32(data[42:])),
+	}
+
+	// Sanity: if CrawlDelay was 0 (shouldn't happen), reset to default
+	if s.CrawlDelay <= 0 {
+		s.CrawlDelay = DefaultCrawlDelay
+	}
+
+	return s
 }
 
 // ExtractDomain extracts the hostname from a URL string.

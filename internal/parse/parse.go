@@ -38,6 +38,11 @@ type Pool struct {
 	contentDedup contentTracker
 }
 
+// maxContentTrackerEntries caps the soft-404 tracker to prevent unbounded
+// memory growth. When the limit is reached, half the entries are evicted
+// (random eviction via Go map iteration order).
+const maxContentTrackerEntries = 500_000
+
 // contentTracker tracks per-domain body hashes for soft-404 detection.
 type contentTracker struct {
 	mu     sync.Mutex
@@ -56,6 +61,18 @@ func (ct *contentTracker) isDuplicate(domain string, body []byte) bool {
 
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
+
+	// Evict half the entries when at capacity
+	if len(ct.counts) >= maxContentTrackerEntries {
+		target := maxContentTrackerEntries / 2
+		for k := range ct.counts {
+			delete(ct.counts, k)
+			if len(ct.counts) <= target {
+				break
+			}
+		}
+	}
+
 	ct.counts[key]++
 	return ct.counts[key] >= soft404Threshold
 }
