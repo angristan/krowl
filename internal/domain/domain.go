@@ -469,6 +469,33 @@ func (m *Manager) RecordFetch(domain string, latency time.Duration) {
 	s.CrawlDelay = adaptive
 }
 
+// RecordRateLimit handles a 429 Too Many Requests response.
+// It doubles the domain's crawl delay (capped at MaxCrawlDelay) and sets a
+// backoff period. If retryAfter > 0 (from Retry-After header), that value is
+// used as the backoff instead.
+func (m *Manager) RecordRateLimit(domain string, retryAfter time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.getOrCreateLocked(domain)
+
+	// Double the crawl delay, capped at MaxCrawlDelay
+	newDelay := s.CrawlDelay * 2
+	if newDelay > MaxCrawlDelay {
+		newDelay = MaxCrawlDelay
+	}
+	if newDelay < MinCrawlDelay {
+		newDelay = MinCrawlDelay
+	}
+	s.CrawlDelay = newDelay
+
+	// Set backoff: use Retry-After if provided, otherwise use the new delay
+	backoff := newDelay
+	if retryAfter > 0 {
+		backoff = retryAfter
+	}
+	s.BackoffUntil = time.Now().Add(backoff)
+}
+
 // RecordError records a fetch error for a domain.
 // Applies exponential backoff after repeated failures.
 // After MaxConsecutiveDead errors the domain is permanently abandoned.

@@ -34,6 +34,9 @@ import (
 // errNonRetryable wraps errors that should not be retried (non-HTML, bad request, etc.)
 var errNonRetryable = errors.New("non-retryable")
 
+// errRateLimited signals a 429 Too Many Requests response.
+var errRateLimited = errors.New("rate-limited")
+
 // networkErrCount is used to sample network error logging (log every 100th).
 var networkErrCount atomic.Int64
 
@@ -169,6 +172,14 @@ func (p *Pool) fetchLoop(ctx context.Context, id int) {
 		latency := time.Since(fetchStart)
 		if fetchErr != nil {
 			p.domains.RecordFetch(d, latency)
+			// 429 Too Many Requests: domain already backed off in fetch(),
+			// re-enqueue the URL so it gets retried after the backoff expires.
+			if errors.Is(fetchErr, errRateLimited) {
+				m.RateLimited.Inc()
+				p.domains.Enqueue(d, rawURL, item.Depth)
+				p.repushIfNeeded(d)
+				continue
+			}
 			// DNS NXDOMAIN: kill domain immediately, no point retrying
 			if classifyNetworkError(fetchErr) == "dns_nxdomain" {
 				p.domains.RecordDNSError(d)
@@ -226,6 +237,10 @@ func (p *Pool) fetchWithRetry(ctx context.Context, rawURL, d string) (*Result, e
 		}
 		lastErr = err
 		if errors.Is(err, errNonRetryable) {
+			return nil, err
+		}
+		// 429 is handled at the domain level (backoff + re-enqueue), don't retry
+		if errors.Is(err, errRateLimited) {
 			return nil, err
 		}
 		// DNS NXDOMAIN is permanent — don't retry
@@ -332,6 +347,14 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	// Record status
 	m.PagesFetched.WithLabelValues(strconv.Itoa(resp.StatusCode)).Inc()
 
+	// 429 Too Many Requests: back off this domain and re-enqueue the URL.
+	// Respect Retry-After header if present.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		p.domains.RecordRateLimit(d, retryAfter)
+		return nil, errRateLimited
+	}
+
 	// HTTP protocol version (always HTTP/1.1 with gowarc — HTTP/2 disabled
 	// because WARC recording requires per-connection TeeReader wrapping)
 	m.HTTPVersion.WithLabelValues(resp.Proto).Inc()
@@ -378,6 +401,36 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 		Body:   body,
 		Status: resp.StatusCode,
 	}, nil
+}
+
+// parseRetryAfter parses the Retry-After header value.
+// Supports both delay-seconds ("120") and HTTP-date formats.
+// Returns 0 if the header is missing, empty, or unparseable.
+func parseRetryAfter(val string) time.Duration {
+	if val == "" {
+		return 0
+	}
+	// Try seconds first (most common for 429)
+	if secs, err := strconv.Atoi(val); err == nil && secs > 0 {
+		d := time.Duration(secs) * time.Second
+		// Cap at 1 hour to avoid pathological values
+		if d > time.Hour {
+			d = time.Hour
+		}
+		return d
+	}
+	// Try HTTP-date: "Mon, 02 Jan 2006 15:04:05 GMT"
+	if t, err := http.ParseTime(val); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			return 0
+		}
+		if d > time.Hour {
+			d = time.Hour
+		}
+		return d
+	}
+	return 0
 }
 
 // shortContentType extracts the base content type (e.g. "text/html" from "text/html; charset=utf-8").
