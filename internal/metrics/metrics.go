@@ -47,6 +47,12 @@ var (
 		Help: "Fetch errors by category",
 	}, []string{"reason"})
 
+	// Network error subcategories (DNS, timeout, reset, refused, TLS, etc.)
+	NetworkErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "network_errors_total",
+		Help: "Network errors broken down by cause",
+	}, []string{"cause"})
+
 	// Fetch retries (transient errors that were retried)
 	FetchRetries = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: ns, Name: "fetch_retries_total",
@@ -375,7 +381,7 @@ var (
 func Register() {
 	// Fetch / HTTP
 	prometheus.MustRegister(
-		PagesFetched, FetchErrors, FetchRetries, DomainsDead, FetchDuration,
+		PagesFetched, FetchErrors, NetworkErrors, FetchRetries, DomainsDead, FetchDuration,
 		DNSDuration, ConnectDuration, TLSDuration, TTFBDuration,
 		ResponseSize, ContentTypes, RedirectsFollowed, RobotsBlocked,
 		HTTPVersion, URLScheme, TLSVersion, TLSCipher, IPVersion, ResponseEncoding,

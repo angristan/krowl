@@ -41,10 +41,13 @@ const (
 
 // State holds all per-domain crawl state.
 type State struct {
-	// robots.txt (parsed via temoto/robotstxt)
-	Robots       *robotstxt.RobotsData
-	RobotsGroup  *robotstxt.Group // cached group for our user-agent
-	RobotsExpiry time.Time
+	// robots.txt — only the group for our user-agent is retained.
+	// The full *robotstxt.RobotsData is parsed then released to avoid
+	// holding compiled regexes for every rule in memory (~10KB+ per domain,
+	// which at 800K+ domains = multi-GB heap).
+	RobotsGroup    *robotstxt.Group // cached group for our user-agent
+	RobotsSitemaps []string         // Sitemap: directives extracted from robots.txt
+	RobotsExpiry   time.Time
 
 	// Rate limiting
 	CrawlDelay       time.Duration
@@ -74,7 +77,15 @@ type Manager struct {
 
 	userAgent   string
 	maxFrontier int64 // global cap; 0 = unlimited
+
+	// sitemapSem limits concurrent sitemap discovery goroutines.
+	// Without this, every first robots.txt fetch spawns a goroutine,
+	// which can cause goroutine/FD leaks under heavy domain churn.
+	sitemapSem chan struct{}
 }
+
+// maxConcurrentSitemaps limits the number of simultaneous sitemap fetch goroutines.
+const maxConcurrentSitemaps = 50
 
 // NewManager creates a domain manager with the given user agent string.
 func NewManager(userAgent string, maxFrontier int, queue *urlqueue.Queue) *Manager {
@@ -87,6 +98,7 @@ func NewManager(userAgent string, maxFrontier int, queue *urlqueue.Queue) *Manag
 		userAgent:   userAgent,
 		maxFrontier: int64(maxFrontier),
 		queue:       queue,
+		sitemapSem:  make(chan struct{}, maxConcurrentSitemaps),
 	}
 }
 
@@ -190,9 +202,12 @@ func (m *Manager) IsAllowed(d, path string) (bool, error) {
 
 		m.mu.Lock()
 		s = m.getOrCreateLocked(d)
-		s.Robots = robots
 		s.RobotsGroup = group
+		s.RobotsSitemaps = robots.Sitemaps // extract before releasing
 		s.RobotsExpiry = time.Now().Add(RobotsExpiry)
+		// Note: the full *robotstxt.RobotsData (with compiled regexes) is
+		// NOT stored — only the Group and Sitemaps are retained.
+		// This saves ~10KB+ per domain in heap.
 
 		// Store robots.txt crawl-delay as a floor for adaptive rate
 		if group.CrawlDelay > 0 {
@@ -203,8 +218,17 @@ func (m *Manager) IsAllowed(d, path string) (bool, error) {
 		}
 		m.mu.Unlock()
 
-		// Trigger sitemap discovery in the background
-		go m.DiscoverSitemap(d)
+		// Trigger sitemap discovery in the background (bounded by sitemapSem)
+		select {
+		case m.sitemapSem <- struct{}{}:
+			go func() {
+				defer func() { <-m.sitemapSem }()
+				m.DiscoverSitemap(d)
+			}()
+		default:
+			// Semaphore full: skip sitemap for this domain.
+			// It will be attempted again on the next robots.txt refresh (24h).
+		}
 	}
 
 	return group.Test(path), nil
@@ -318,10 +342,7 @@ func (m *Manager) DiscoverSitemap(d string) {
 	s.SitemapChecked = true
 
 	// Collect Sitemap: directives from robots.txt
-	var hints []string
-	if s.Robots != nil {
-		hints = s.Robots.Sitemaps
-	}
+	hints := s.RobotsSitemaps
 	m.mu.Unlock()
 
 	// Fetch sitemap (network I/O, don't hold lock)
@@ -332,6 +353,38 @@ func (m *Manager) DiscoverSitemap(d string) {
 	if len(urls) > 0 {
 		metrics.SitemapURLsDiscovered.Add(float64(len(urls)))
 	}
+}
+
+// RebuildFrontier pushes all domains with pending URLs in the urlqueue
+// into the frontier heap. Must be called after SetFrontier and
+// RestoreAllState so that dead domains are skipped and NextFetchTime
+// uses restored crawl delays. Without this, a restart leaves the
+// frontier empty and fetch workers idle despite a full urlqueue.
+func (m *Manager) RebuildFrontier() int {
+	m.mu.RLock()
+	fr := m.frontier
+	m.mu.RUnlock()
+	if fr == nil {
+		return 0
+	}
+
+	active := m.queue.ActiveDomains()
+	rebuilt := 0
+	for _, d := range active {
+		m.mu.RLock()
+		dead := false
+		if s, ok := m.domains[d]; ok && s.Dead {
+			dead = true
+		}
+		m.mu.RUnlock()
+		if dead {
+			continue
+		}
+		fr.Push(d, m.NextFetchTime(d))
+		rebuilt++
+	}
+	slog.Info("frontier rebuilt from urlqueue", "domains", rebuilt, "skipped", len(active)-rebuilt)
+	return rebuilt
 }
 
 // NextFetchTime returns the earliest time this domain can be fetched.

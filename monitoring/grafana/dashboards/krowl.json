@@ -440,7 +440,7 @@
       },
       "targets": [
         {
-          "expr": "sum(krowl_warc_bytes_written_total{instance=~\"$instance\"})",
+          "expr": "sum(krowl_warc_data_bytes_total{instance=~\"$instance\"})",
           "refId": "A"
         }
       ],
