@@ -611,6 +611,11 @@
           "expr": "sum(rate(krowl_domains_dead_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "Dead domains/s",
           "refId": "B"
+        },
+        {
+          "expr": "sum(rate(krowl_rate_limited_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "429 rate-limited/s",
+          "refId": "C"
         }
       ],
       "fieldConfig": {
