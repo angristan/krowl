@@ -27,16 +27,16 @@ flowchart LR
 
 ## Components
 
-| Component | Implementation | Purpose |
-|-----------|---------------|---------|
-| URL queue | Pebble (per-domain FIFO) | Persistent frontier storage, survives restarts |
-| Dedup | Bloom filter + Pebble | Fast in-memory check, exact disk-backed persistence |
-| Domain state | Binary-encoded in Pebble | Crawl delay, backoff, error counts, robots.txt, dead flag |
-| Frontier | Min-heap by next-fetch time | O(log n) scheduling with politeness delays |
-| Sharding | Consistent hash ring (Consul) | Domain ownership across nodes, topology watches |
-| WARC | gowarc at transport layer | Transparent request/response capture to rotating gzip files |
-| Metrics | Prometheus + Grafana | Pebble internals, throughput, queue depths, Redis pool stats |
-| Profiling | Pyroscope (push) + pprof | Continuous profiling, on-demand heap/goroutine dumps |
+| Component    | Implementation                | Purpose                                                      |
+| ------------ | ----------------------------- | ------------------------------------------------------------ |
+| URL queue    | Pebble (per-domain FIFO)      | Persistent frontier storage, survives restarts               |
+| Dedup        | Bloom filter + Pebble         | Fast in-memory check, exact disk-backed persistence          |
+| Domain state | Binary-encoded in Pebble      | Crawl delay, backoff, error counts, robots.txt, dead flag    |
+| Frontier     | Min-heap by next-fetch time   | O(log n) scheduling with politeness delays                   |
+| Sharding     | Consistent hash ring (Consul) | Domain ownership across nodes, topology watches              |
+| WARC         | gowarc at transport layer     | Transparent request/response capture to rotating gzip files  |
+| Metrics      | Prometheus + Grafana          | Pebble internals, throughput, queue depths, Redis pool stats |
+| Profiling    | Pyroscope (push) + pprof      | Continuous profiling, on-demand heap/goroutine dumps         |
 
 ## Durability
 
@@ -93,3 +93,8 @@ Master (s-2vcpu-4gb): Consul server, Redis (JuiceFS metadata), Prometheus, Grafa
 Workers (s-4vcpu-8gb-amd x N): Crawler, local Redis, Pebble, JuiceFS -> DO Spaces
 Networking: VPC 10.100.0.0/16, public inbound blocked, Tailscale for management
 ```
+
+## Inspiration
+
+- https://andrewkchan.dev/posts/crawler.html
+- https://github.com/internetarchive/Zeno
