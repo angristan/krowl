@@ -30,7 +30,11 @@ type Dedup struct {
 // New creates a two-tier dedup store.
 // expectedURLs is the estimated total URLs this node will see.
 func New(pebblePath string, expectedURLs int) (*Dedup, error) {
+	cache := pebble.NewCache(256 * 1024 * 1024) // 256MB block cache
+	defer cache.Unref()
+
 	db, err := pebble.Open(pebblePath, &pebble.Options{
+		Cache:                       cache,
 		MemTableSize:                64 * 1024 * 1024, // 64MB memtable
 		MemTableStopWritesThreshold: 4,
 		MaxConcurrentCompactions:    func() int { return 4 },

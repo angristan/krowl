@@ -478,7 +478,8 @@ func classifyNetworkError(err error) string {
 	switch {
 	case strings.Contains(errStr, "no TYPE=A record found"),
 		strings.Contains(errStr, "failed to resolve DNS"),
-		strings.Contains(errStr, "no such host"):
+		strings.Contains(errStr, "no such host"),
+		strings.Contains(errStr, "no suitable IP address"):
 		return "dns_nxdomain"
 	case strings.Contains(errStr, "tls:"):
 		return "tls_error"
