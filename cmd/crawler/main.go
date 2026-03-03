@@ -182,6 +182,9 @@ func main() {
 	// Domain manager
 	dm := domain.NewManager(userAgent, *maxFrontier, uq)
 
+	// Restore persisted domain state (crawl delays, error counts, etc.)
+	dm.RestoreAllState()
+
 	// Frontier priority heap (replaces O(n) domain scan with O(log n) heap)
 	fr := frontier.New()
 	dm.SetFrontier(fr)
@@ -321,6 +324,9 @@ func main() {
 	// Metrics + health server
 	go serveHTTP(*metricsPort)
 
+	// Periodic domain state persistence (every 60s)
+	go periodicStateSave(ctx, dm)
+
 	// Distributed-only goroutines
 	if !*standalone {
 		// Consul registration was done before seed loading; defer deregistration
@@ -363,7 +369,27 @@ func main() {
 		slog.Error("gowarc close error", "error", err)
 	}
 
+	// Final domain state persistence
+	n := dm.SaveAllState()
+	slog.Info("domain state saved", "domains", n)
+
 	slog.Info("krowl shutdown complete")
+}
+
+// periodicStateSave persists domain metadata to Pebble every 60 seconds.
+func periodicStateSave(ctx context.Context, dm *domain.Manager) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			start := time.Now()
+			n := dm.SaveAllState()
+			slog.Info("periodic domain state save", "domains", n, "duration", time.Since(start).Round(time.Millisecond))
+		}
+	}
 }
 
 // registerConsulService registers this crawler in Consul with a health check.

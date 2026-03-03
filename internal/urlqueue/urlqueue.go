@@ -272,6 +272,68 @@ func decodeValue(val []byte) (depth int, url string) {
 	return int(d), string(val[n:])
 }
 
+// --- Domain metadata storage ---
+//
+// Domain state is stored with key prefix \x01 to separate from URL queue
+// keys (which start with printable domain chars >= 0x20).
+//
+// Key:   \x01<domain>
+// Value: caller-defined opaque bytes (typically gob-encoded struct)
+
+const metaPrefix = 0x01
+
+func metaKey(domain string) []byte {
+	key := make([]byte, 1+len(domain))
+	key[0] = metaPrefix
+	copy(key[1:], domain)
+	return key
+}
+
+// SaveMeta stores opaque metadata for a domain.
+func (q *Queue) SaveMeta(domain string, data []byte) {
+	_ = q.db.Set(metaKey(domain), data, pebble.NoSync)
+}
+
+// LoadMeta retrieves metadata for a domain. Returns nil if not found.
+func (q *Queue) LoadMeta(domain string) []byte {
+	val, closer, err := q.db.Get(metaKey(domain))
+	if err != nil {
+		return nil
+	}
+	// Copy before closing (val is only valid until closer.Close)
+	out := make([]byte, len(val))
+	copy(out, val)
+	_ = closer.Close()
+	return out
+}
+
+// IterMeta calls fn for every stored domain metadata entry.
+// Used at startup to restore domain state.
+func (q *Queue) IterMeta(fn func(domain string, data []byte)) {
+	prefix := []byte{metaPrefix}
+	iter, err := q.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: []byte{metaPrefix + 1},
+	})
+	if err != nil {
+		return
+	}
+	defer func() { _ = iter.Close() }()
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		domain := string(iter.Key()[1:]) // strip \x01 prefix
+		// Copy value since iterator reuses buffers
+		val := make([]byte, len(iter.Value()))
+		copy(val, iter.Value())
+		fn(domain, val)
+	}
+}
+
+// DeleteMeta removes metadata for a domain.
+func (q *Queue) DeleteMeta(domain string) {
+	_ = q.db.Delete(metaKey(domain), pebble.NoSync)
+}
+
 // prefixUpperBound returns the immediate successor prefix for
 // Pebble range-limited iteration. E.g., "foo\x00" → "foo\x01".
 func prefixUpperBound(prefix []byte) []byte {
