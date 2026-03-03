@@ -42,6 +42,20 @@ All state survives crashes and restarts:
 - **Bloom filter:** rewarmed from Pebble on startup (`WarmBloom()`)
 - **Graceful shutdown:** SIGINT/SIGTERM triggers drain workers, flush WARC, save state, close DBs
 
+## Performance
+
+**Memory:** `GOMEMLIMIT` auto-set from cgroup/system memory (default 70%). Inline FNV hashing (no allocator overhead). Lightweight robots.txt parser without regex compilation, saving ~10KB/domain vs `temoto/robotstxt`. Soft-404 content tracker capped at 500K entries with half-eviction.
+
+**Network:** local CoreDNS with 500K-entry cache (1h TTL). Aggressive timeouts: 2s dial, 2s TLS, 3s response header, 5s total. HTTP/1.1 only (required for gowarc per-connection WARC recording).
+
+**Storage:** Pebble tuned for throughput with 256MB block cache + 64MB memtable per DB and batch deletes on domain drop. Bloom filter at 1% FP rate using FNV-128a double hashing (Kirsch-Mitzenmacher), ~120MB for 50M URLs.
+
+**Concurrency:** 750 fetch workers (I/O-bound, fixed). Parse workers auto-scaled from NumCPU to 64 based on channel backpressure: scale up aggressively at >50% fill, scale down after 30s sustained <10%. 16 WARC writer goroutines.
+
+**Politeness:** adaptive per-domain rate limiting using EMA latency x 5 multiplier, clamped 250ms to 30s. Exponential backoff after 5 consecutive errors (2^n minutes, capped 1h). Domain permanently abandoned after 10 errors. DNS NXDOMAIN triggers immediate death.
+
+**Sharding:** consistent hash ring with 128 vnodes/node, FNV-1a, O(log n) lookup. Cross-shard URLs forwarded via Redis LPUSH/LPOP in batches of 500.
+
 ## Usage
 
 ```bash
