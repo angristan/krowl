@@ -60,7 +60,7 @@ func main() {
 		urlqueuePath    = flag.String("urlqueue", "/mnt/jfs/data/urlqueue", "Path to Pebble-backed URL queue")
 		fetchWorkersF   = flag.Int("fetch-workers", 500, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
-		parseWorkersMax = flag.Int("parse-workers-max", 16, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
+		parseWorkersMax = flag.Int("parse-workers-max", 64, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
 		warcPoolSize    = flag.Int("warc-pool-size", 4, "Number of concurrent WARC writer goroutines (gowarc pool)")
 		warcSizeMB      = flag.Float64("warc-size-mb", 1024, "Max WARC file size in MB before rotation")
 		warcTempDir     = flag.String("warc-temp-dir", "/tmp/krowl-warc", "Temp directory for gowarc spooled files")
@@ -189,6 +189,10 @@ func main() {
 	// Frontier priority heap (replaces O(n) domain scan with O(log n) heap)
 	fr := frontier.New()
 	dm.SetFrontier(fr)
+
+	// On restart, the urlqueue has domains with pending URLs but the frontier
+	// heap is empty. Rebuild it so fetch workers have work immediately.
+	dm.RebuildFrontier()
 
 	// Consistent hash ring
 	hashRing := ring.New(ring.DefaultVnodes)

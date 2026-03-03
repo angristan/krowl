@@ -66,12 +66,12 @@ groups:
         expr: >
           histogram_quantile(0.95,
             sum by (le) (rate(krowl_fetch_duration_seconds_bucket[5m]))
-          ) > 10
+          ) > 5
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "p95 fetch latency above 10 seconds"
+          summary: "p95 fetch latency above 5 seconds"
           description: "Slow responses are backing up the pipeline. p95 = {{ $value | humanizeDuration }}."
 
       - alert: HighTLSLatencyP95

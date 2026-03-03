@@ -17,9 +17,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	warc "github.com/internetarchive/gowarc"
@@ -35,7 +37,7 @@ var errNonRetryable = errors.New("non-retryable")
 var networkErrCount atomic.Int64
 
 const (
-	FetchTimeout = 10 * time.Second
+	FetchTimeout = 5 * time.Second
 	MaxBodySize  = 1 * 1024 * 1024 // 1MB
 	MaxRedirects = 5
 	MaxRetries   = 1 // retry transient errors once
@@ -278,8 +280,10 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	resp, err := p.client.Do(req)
 	if err != nil {
 		m.FetchErrors.WithLabelValues("network").Inc()
+		cause := classifyNetworkError(err)
+		m.NetworkErrors.WithLabelValues(cause).Inc()
 		if n := networkErrCount.Add(1); n%100 == 1 {
-			slog.Debug("fetch network error sample", "url", rawURL, "error", err)
+			slog.Debug("fetch network error sample", "url", rawURL, "cause", cause, "error", err)
 		}
 		return nil, err
 	}
@@ -396,4 +400,75 @@ func tlsVersionName(v uint16) string {
 	default:
 		return "unknown"
 	}
+}
+
+// classifyNetworkError inspects a network error and returns a short label
+// for the krowl_network_errors_total metric. Unwraps through net.OpError,
+// os.SyscallError, etc. to find the root cause.
+func classifyNetworkError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+
+	// Context errors (timeout, cancelled)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+
+	// DNS errors
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.IsTimeout {
+			return "dns_timeout"
+		}
+		if dnsErr.IsNotFound {
+			return "dns_nxdomain"
+		}
+		return "dns_error"
+	}
+
+	// Syscall-level errors (unwrap through net.OpError -> os.SyscallError)
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		var sysErr *os.SyscallError
+		if errors.As(opErr.Err, &sysErr) {
+			switch {
+			case errors.Is(sysErr.Err, syscall.ECONNREFUSED):
+				return "conn_refused"
+			case errors.Is(sysErr.Err, syscall.ECONNRESET):
+				return "conn_reset"
+			case errors.Is(sysErr.Err, syscall.ECONNABORTED):
+				return "conn_aborted"
+			case errors.Is(sysErr.Err, syscall.ETIMEDOUT):
+				return "tcp_timeout"
+			case errors.Is(sysErr.Err, syscall.ENETUNREACH):
+				return "net_unreachable"
+			case errors.Is(sysErr.Err, syscall.EHOSTUNREACH):
+				return "host_unreachable"
+			}
+		}
+		if opErr.Timeout() {
+			return "timeout"
+		}
+	}
+
+	// TLS errors (string match as Go doesn't export typed TLS errors)
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "tls:"):
+		return "tls_error"
+	case strings.Contains(errStr, "certificate"):
+		return "tls_cert"
+	case strings.Contains(errStr, "EOF"):
+		return "eof"
+	case strings.Contains(errStr, "too many redirects"):
+		return "too_many_redirects"
+	case strings.Contains(errStr, "connection reset"):
+		return "conn_reset"
+	}
+
+	return "other"
 }

@@ -7,12 +7,20 @@ package dedup
 
 import (
 	"encoding/binary"
-	"hash/fnv"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/stanislas/krowl/internal/bloom"
 	m "github.com/stanislas/krowl/internal/metrics"
 )
+
+// FNV-64a constants for inline hashing.
+const (
+	fnv64aOffset = 14695981039346656037
+	fnv64aPrime  = 1099511628211
+)
+
+// Reusable value for Pebble Set calls (avoids []byte("1") alloc per write).
+var pebbleOne = []byte("1")
 
 type Dedup struct {
 	bloom  *bloom.Filter
@@ -73,7 +81,7 @@ func (d *Dedup) IsNew(rawURL string) bool {
 	// New URL. Mark in both bloom + Pebble.
 	m.DedupNewURLs.Inc()
 	d.bloom.Add(key)
-	_ = d.pebble.Set(key, []byte("1"), pebble.NoSync)
+	_ = d.pebble.Set(key, pebbleOne, pebble.NoSync)
 	return true
 }
 
@@ -83,7 +91,7 @@ func (d *Dedup) IsNew(rawURL string) bool {
 func (d *Dedup) MarkSeen(rawURL string) {
 	key := urlKey(rawURL)
 	d.bloom.Add(key)
-	_ = d.pebble.Set(key, []byte("1"), pebble.NoSync)
+	_ = d.pebble.Set(key, pebbleOne, pebble.NoSync)
 }
 
 // Metrics returns the underlying Pebble metrics.
@@ -96,10 +104,15 @@ func (d *Dedup) Close() error {
 	return d.pebble.Close()
 }
 
+// urlKey computes FNV-64a inline to avoid fnv.New64a() interface alloc
+// and []byte(rawURL) string-to-byte conversion.
 func urlKey(rawURL string) []byte {
-	h := fnv.New64a()
-	h.Write([]byte(rawURL))
+	h := uint64(fnv64aOffset)
+	for i := 0; i < len(rawURL); i++ {
+		h ^= uint64(rawURL[i])
+		h *= fnv64aPrime
+	}
 	key := make([]byte, 8)
-	binary.BigEndian.PutUint64(key, h.Sum64())
+	binary.BigEndian.PutUint64(key, h)
 	return key
 }

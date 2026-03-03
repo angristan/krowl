@@ -24,8 +24,11 @@ func TestExtractLinks_AbsoluteHTTPLinks(t *testing.T) {
 		t.Fatalf("got %d links, want %d: %v", len(links), len(want), links)
 	}
 	for i, l := range links {
-		if l != want[i] {
-			t.Errorf("links[%d] = %q, want %q", i, l, want[i])
+		if l.URL != want[i] {
+			t.Errorf("links[%d].URL = %q, want %q", i, l.URL, want[i])
+		}
+		if l.Domain == "" {
+			t.Errorf("links[%d].Domain is empty for URL %q", i, l.URL)
 		}
 	}
 }
@@ -46,8 +49,8 @@ func TestExtractLinks_ResolvesRelativeLinks(t *testing.T) {
 		t.Fatalf("got %d links, want %d: %v", len(links), len(want), links)
 	}
 	for i, l := range links {
-		if l != want[i] {
-			t.Errorf("links[%d] = %q, want %q", i, l, want[i])
+		if l.URL != want[i] {
+			t.Errorf("links[%d].URL = %q, want %q", i, l.URL, want[i])
 		}
 	}
 }
@@ -66,8 +69,8 @@ func TestExtractLinks_IgnoresNonHTTPSchemes(t *testing.T) {
 	if len(links) != 1 {
 		t.Fatalf("got %d links, want 1: %v", len(links), links)
 	}
-	if links[0] != "https://example.com/valid" {
-		t.Errorf("got %q, want %q", links[0], "https://example.com/valid")
+	if links[0].URL != "https://example.com/valid" {
+		t.Errorf("got %q, want %q", links[0].URL, "https://example.com/valid")
 	}
 }
 
@@ -83,8 +86,8 @@ func TestExtractLinks_IgnoresFragmentOnlyLinks(t *testing.T) {
 	if len(links) != 1 {
 		t.Fatalf("got %d links, want 1: %v", len(links), links)
 	}
-	if links[0] != "https://example.com/real" {
-		t.Errorf("got %q, want %q", links[0], "https://example.com/real")
+	if links[0].URL != "https://example.com/real" {
+		t.Errorf("got %q, want %q", links[0].URL, "https://example.com/real")
 	}
 }
 
@@ -103,7 +106,9 @@ func TestExtractLinks_Deduplicates(t *testing.T) {
 	}
 
 	sorted := make([]string, len(links))
-	copy(sorted, links)
+	for i, l := range links {
+		sorted[i] = l.URL
+	}
 	sort.Strings(sorted)
 
 	want := []string{
@@ -161,8 +166,8 @@ func TestExtractLinks_StripsFragments(t *testing.T) {
 		t.Fatalf("got %d links, want %d: %v", len(links), len(want), links)
 	}
 	for i, l := range links {
-		if l != want[i] {
-			t.Errorf("links[%d] = %q, want %q", i, l, want[i])
+		if l.URL != want[i] {
+			t.Errorf("links[%d].URL = %q, want %q", i, l.URL, want[i])
 		}
 	}
 }
@@ -176,9 +181,9 @@ func TestExtractLinks_NormalizesHostToLowercase(t *testing.T) {
 	links := extractLinks(body, "https://base.com/")
 
 	for _, l := range links {
-		u, err := url.Parse(l)
+		u, err := url.Parse(l.URL)
 		if err != nil {
-			t.Fatalf("failed to parse link %q: %v", l, err)
+			t.Fatalf("failed to parse link %q: %v", l.URL, err)
 		}
 		if u.Host != "example.com" {
 			t.Errorf("host not normalized: got %q, want %q", u.Host, "example.com")
@@ -202,9 +207,12 @@ func TestResolveLink_ResolvesRelativePaths(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := resolveLink(base, tc.href)
+		got, dom := resolveLink(base, tc.href)
 		if got != tc.want {
 			t.Errorf("resolveLink(%q) = %q, want %q", tc.href, got, tc.want)
+		}
+		if dom == "" {
+			t.Errorf("resolveLink(%q) returned empty domain", tc.href)
 		}
 	}
 }
@@ -220,9 +228,12 @@ func TestResolveLink_ReturnsEmptyForNonHTTPSchemes(t *testing.T) {
 	}
 
 	for _, href := range hrefs {
-		got := resolveLink(base, href)
+		got, dom := resolveLink(base, href)
 		if got != "" {
 			t.Errorf("resolveLink(%q) = %q, want empty", href, got)
+		}
+		if dom != "" {
+			t.Errorf("resolveLink(%q) domain = %q, want empty", href, dom)
 		}
 	}
 }
@@ -230,12 +241,12 @@ func TestResolveLink_ReturnsEmptyForNonHTTPSchemes(t *testing.T) {
 func TestResolveLink_EmptyHref(t *testing.T) {
 	base, _ := url.Parse("https://example.com/page")
 
-	got := resolveLink(base, "")
+	got, _ := resolveLink(base, "")
 	if got != "" {
 		t.Errorf("resolveLink(%q) = %q, want empty", "", got)
 	}
 
-	got = resolveLink(base, "   ")
+	got, _ = resolveLink(base, "   ")
 	if got != "" {
 		t.Errorf("resolveLink(%q) = %q, want empty for whitespace-only", "   ", got)
 	}
@@ -254,7 +265,7 @@ func TestResolveLink_NormalizesScheme(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := resolveLink(base, tc.href)
+		got, _ := resolveLink(base, tc.href)
 		u, err := url.Parse(got)
 		if err != nil {
 			t.Fatalf("failed to parse resolved link %q: %v", got, err)
@@ -265,7 +276,7 @@ func TestResolveLink_NormalizesScheme(t *testing.T) {
 	}
 
 	// ftp scheme should be rejected
-	got := resolveLink(base, "ftp://files.example.com/file")
+	got, _ := resolveLink(base, "ftp://files.example.com/file")
 	if got != "" {
 		t.Errorf("resolveLink(ftp://...) = %q, want empty", got)
 	}
@@ -274,7 +285,7 @@ func TestResolveLink_NormalizesScheme(t *testing.T) {
 func TestResolveLink_StripsFragment(t *testing.T) {
 	base, _ := url.Parse("https://example.com/")
 
-	got := resolveLink(base, "https://example.com/page#section")
+	got, _ := resolveLink(base, "https://example.com/page#section")
 	if got != "https://example.com/page" {
 		t.Errorf("resolveLink with fragment = %q, want %q", got, "https://example.com/page")
 	}
@@ -283,7 +294,7 @@ func TestResolveLink_StripsFragment(t *testing.T) {
 func TestResolveLink_FragmentOnlyHref(t *testing.T) {
 	base, _ := url.Parse("https://example.com/page")
 
-	got := resolveLink(base, "#section")
+	got, _ := resolveLink(base, "#section")
 	if got != "" {
 		t.Errorf("resolveLink(%q) = %q, want empty", "#section", got)
 	}
@@ -292,7 +303,7 @@ func TestResolveLink_FragmentOnlyHref(t *testing.T) {
 func TestResolveLink_NormalizesHostToLowercase(t *testing.T) {
 	base, _ := url.Parse("https://example.com/")
 
-	got := resolveLink(base, "https://EXAMPLE.COM/Page")
+	got, _ := resolveLink(base, "https://EXAMPLE.COM/Page")
 	want := "https://example.com/Page"
 	if got != want {
 		t.Errorf("resolveLink with uppercase host = %q, want %q", got, want)

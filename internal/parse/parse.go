@@ -4,6 +4,7 @@
 package parse
 
 import (
+	"bytes"
 	"context"
 	"hash/fnv"
 	"log/slog"
@@ -164,20 +165,20 @@ func (p *Pool) processResult(ctx context.Context, result fetch.Result) {
 
 	childDepth := result.Depth + 1
 
-	for _, link := range links {
-		if !p.dedup.IsNew(link) {
+	for i := range links {
+		if !p.dedup.IsNew(links[i].URL) {
 			deduped++
 			continue
 		}
 
-		d := domain.ExtractDomain(link)
-		owner := p.ring.Owner(d)
+		// Domain was pre-extracted during link resolution (avoids re-parsing URL).
+		owner := p.ring.Owner(links[i].Domain)
 
 		if owner == p.myID {
-			p.domains.Enqueue(d, link, childDepth)
+			p.domains.Enqueue(links[i].Domain, links[i].URL, childDepth)
 			enqueued++
 		} else {
-			if err := p.sender.Forward(ctx, link, childDepth); err != nil {
+			if err := p.sender.Forward(ctx, links[i].URL, childDepth); err != nil {
 				// Peer unavailable, skip
 				continue
 			}
@@ -201,17 +202,25 @@ func (p *Pool) processResult(ctx context.Context, result fetch.Result) {
 	)
 }
 
+// linkResult holds a normalized URL and its pre-extracted domain,
+// avoiding a second url.Parse in the processing loop.
+type linkResult struct {
+	URL    string
+	Domain string
+}
+
 // extractLinks parses HTML and returns all absolute http/https URLs
-// found in <a href="..."> tags.
-func extractLinks(body []byte, baseURL string) []string {
+// found in <a href="..."> tags, with pre-extracted domains.
+func extractLinks(body []byte, baseURL string) []linkResult {
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return nil
 	}
 
-	tokenizer := html.NewTokenizer(strings.NewReader(string(body)))
+	// bytes.NewReader avoids the string(body) copy that strings.NewReader requires.
+	tokenizer := html.NewTokenizer(bytes.NewReader(body))
 	seen := make(map[string]struct{})
-	var links []string
+	var links []linkResult
 
 	for {
 		tt := tokenizer.Next()
@@ -227,11 +236,11 @@ func extractLinks(body []byte, baseURL string) []string {
 			for {
 				key, val, more := tokenizer.TagAttr()
 				if string(key) == "href" {
-					link := resolveLink(base, string(val))
+					link, dom := resolveLink(base, string(val))
 					if link != "" {
 						if _, ok := seen[link]; !ok {
 							seen[link] = struct{}{}
-							links = append(links, link)
+							links = append(links, linkResult{URL: link, Domain: dom})
 						}
 					}
 				}
@@ -246,26 +255,26 @@ func extractLinks(body []byte, baseURL string) []string {
 // resolveLink resolves a potentially relative href against the base URL,
 // then normalizes aggressively (strip tracking params, sort query, strip
 // www, etc). Returns empty string for non-http(s) URLs.
-func resolveLink(base *url.URL, href string) string {
+func resolveLink(base *url.URL, href string) (string, string) {
 	href = strings.TrimSpace(href)
 	if href == "" || strings.HasPrefix(href, "#") || strings.HasPrefix(href, "javascript:") ||
 		strings.HasPrefix(href, "mailto:") || strings.HasPrefix(href, "tel:") {
-		return ""
+		return "", ""
 	}
 
 	u, err := url.Parse(href)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 
 	resolved := base.ResolveReference(u)
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
-		return ""
+		return "", ""
 	}
 
-	normalized := urlnorm.Normalize(resolved.String())
+	normalized, host := urlnorm.NormalizeURL(resolved)
 	if len(normalized) > domain.MaxURLLength {
-		return ""
+		return "", ""
 	}
-	return normalized
+	return normalized, host
 }

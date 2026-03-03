@@ -127,6 +127,55 @@ func sortedQuery(v url.Values) string {
 	return b.String()
 }
 
+// NormalizeURL normalizes an already-parsed *url.URL in place and returns
+// the normalized string plus the extracted domain. This avoids the
+// url.Parse overhead when the caller already has a parsed URL (e.g. after
+// ResolveReference). The passed URL is modified in place.
+func NormalizeURL(u *url.URL) (normalized string, host string) {
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+
+	h := u.Hostname()
+	port := u.Port()
+	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+		u.Host = h
+	}
+
+	u.Host = strings.TrimPrefix(u.Host, "www.")
+
+	p := u.Path
+	if p == "" {
+		p = "/"
+	}
+	if len(p) > 1 && strings.HasSuffix(p, "/") {
+		p = strings.TrimRight(p, "/")
+	}
+	for strings.Contains(p, "//") {
+		p = strings.ReplaceAll(p, "//", "/")
+	}
+	u.Path = p
+
+	u.Fragment = ""
+	u.RawFragment = ""
+
+	if u.RawQuery != "" {
+		q := u.Query()
+		cleaned := make(url.Values)
+		for key, vals := range q {
+			if _, isTracking := trackingParams[strings.ToLower(key)]; isTracking {
+				continue
+			}
+			if len(vals) == 1 && vals[0] == "" {
+				continue
+			}
+			cleaned[key] = vals
+		}
+		u.RawQuery = sortedQuery(cleaned)
+	}
+
+	return u.String(), u.Hostname()
+}
+
 // NormalizeDomain extracts and normalizes just the domain from a URL.
 // Strips www. prefix and lowercases.
 func NormalizeDomain(rawURL string) string {
