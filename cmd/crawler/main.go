@@ -21,6 +21,7 @@ import (
 	"unsafe"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
+	"github.com/cockroachdb/pebble"
 	"github.com/grafana/pyroscope-go"
 	consul "github.com/hashicorp/consul/api"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -639,20 +640,28 @@ func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontie
 				m.RedisPoolStaleConns.Set(float64(ps.StaleConns))
 			}
 
-			// Pebble internals
-			pm := dd.Metrics()
-			m.PebbleDiskUsageBytes.Set(float64(pm.DiskSpaceUsage()))
-			m.PebbleMemtableSizeBytes.Set(float64(pm.MemTable.Size))
-			m.PebbleMemtableCount.Set(float64(pm.MemTable.Count))
-			m.PebbleCompactionDebtBytes.Set(float64(pm.Compact.EstimatedDebt))
-			m.PebbleL0Files.Set(float64(pm.Levels[0].NumFiles))
-			m.PebbleL0Sublevels.Set(float64(pm.Levels[0].Sublevels))
-			m.PebbleReadAmp.Set(float64(pm.ReadAmp()))
-			var totalKeys int64
-			for _, lm := range pm.Levels {
-				totalKeys += int64(lm.NumFiles)
+			// Pebble internals (dedup + urlqueue)
+			for _, pdb := range []struct {
+				label   string
+				metrics *pebble.Metrics
+			}{
+				{"dedup", dd.Metrics()},
+				{"urlqueue", dm.URLQueue().Metrics()},
+			} {
+				pm := pdb.metrics
+				m.PebbleDiskUsageBytes.WithLabelValues(pdb.label).Set(float64(pm.DiskSpaceUsage()))
+				m.PebbleMemtableSizeBytes.WithLabelValues(pdb.label).Set(float64(pm.MemTable.Size))
+				m.PebbleMemtableCount.WithLabelValues(pdb.label).Set(float64(pm.MemTable.Count))
+				m.PebbleCompactionDebtBytes.WithLabelValues(pdb.label).Set(float64(pm.Compact.EstimatedDebt))
+				m.PebbleL0Files.WithLabelValues(pdb.label).Set(float64(pm.Levels[0].NumFiles))
+				m.PebbleL0Sublevels.WithLabelValues(pdb.label).Set(float64(pm.Levels[0].Sublevels))
+				m.PebbleReadAmp.WithLabelValues(pdb.label).Set(float64(pm.ReadAmp()))
+				var totalKeys int64
+				for _, lm := range pm.Levels {
+					totalKeys += int64(lm.NumFiles)
+				}
+				m.PebbleTotalKeys.WithLabelValues(pdb.label).Set(float64(totalKeys))
 			}
-			m.PebbleTotalKeys.Set(float64(totalKeys))
 		}
 	}
 }

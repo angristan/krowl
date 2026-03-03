@@ -268,40 +268,41 @@ var (
 )
 
 // ---- Pebble internals ----
+// All Pebble metrics use a "db" label to distinguish instances (dedup, urlqueue).
 
 var (
-	PebbleDiskUsageBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+	PebbleDiskUsageBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Name: "pebble_disk_usage_bytes",
 		Help: "Pebble on-disk space used",
-	})
-	PebbleMemtableSizeBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+	}, []string{"db"})
+	PebbleMemtableSizeBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Name: "pebble_memtable_size_bytes",
 		Help: "Pebble memtable size",
-	})
-	PebbleMemtableCount = prometheus.NewGauge(prometheus.GaugeOpts{
+	}, []string{"db"})
+	PebbleMemtableCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Name: "pebble_memtable_count",
 		Help: "Pebble memtable count",
-	})
-	PebbleCompactionDebtBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+	}, []string{"db"})
+	PebbleCompactionDebtBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Name: "pebble_compaction_debt_bytes",
 		Help: "Pebble estimated compaction debt",
-	})
-	PebbleL0Files = prometheus.NewGauge(prometheus.GaugeOpts{
+	}, []string{"db"})
+	PebbleL0Files = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Name: "pebble_l0_files",
 		Help: "Pebble L0 file count",
-	})
-	PebbleL0Sublevels = prometheus.NewGauge(prometheus.GaugeOpts{
+	}, []string{"db"})
+	PebbleL0Sublevels = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Name: "pebble_l0_sublevels",
 		Help: "Pebble L0 sublevel count",
-	})
-	PebbleReadAmp = prometheus.NewGauge(prometheus.GaugeOpts{
+	}, []string{"db"})
+	PebbleReadAmp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Name: "pebble_read_amp",
 		Help: "Pebble read amplification",
-	})
-	PebbleTotalKeys = prometheus.NewGauge(prometheus.GaugeOpts{
+	}, []string{"db"})
+	PebbleTotalKeys = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Name: "pebble_total_keys",
 		Help: "Pebble estimated total keys",
-	})
+	}, []string{"db"})
 )
 
 // ---- Redis pool ----
