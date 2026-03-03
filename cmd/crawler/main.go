@@ -307,7 +307,7 @@ func main() {
 
 	// Channels — simplified: fetch writes directly to parse channel.
 	// No fan-out or WARC channel needed (gowarc records at transport layer).
-	fetchResults := make(chan fetch.Result, 10000)
+	fetchResults := make(chan fetch.Result, 100)
 
 	// Parse pool (metrics are wired directly to the centralized metrics package)
 	parsePool := parse.NewPool(fetchResults, dd, dm, sender, hashRing, *nodeID, parseMin)
