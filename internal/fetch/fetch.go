@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -329,7 +330,7 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 	}
 
 	// Record status
-	m.PagesFetched.WithLabelValues(m.StatusBucket(resp.StatusCode)).Inc()
+	m.PagesFetched.WithLabelValues(strconv.Itoa(resp.StatusCode)).Inc()
 
 	// HTTP protocol version (always HTTP/1.1 with gowarc — HTTP/2 disabled
 	// because WARC recording requires per-connection TeeReader wrapping)
