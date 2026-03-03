@@ -178,11 +178,15 @@ func parseRobotsTxt(body, agent string) robotsResult {
 			}
 		case "allow":
 			if current != nil && val != "" {
-				current.rules = append(current.rules, robotsRule{pattern: val, allow: true})
+				// strings.Clone detaches from the original robots.txt body.
+				// Without this, each pattern substring pins the entire body
+				// (up to 512KB) in memory. With 500K+ domains this was 44%
+				// of total inuse_space.
+				current.rules = append(current.rules, robotsRule{pattern: strings.Clone(val), allow: true})
 			}
 		case "disallow":
 			if current != nil && val != "" {
-				current.rules = append(current.rules, robotsRule{pattern: val, allow: false})
+				current.rules = append(current.rules, robotsRule{pattern: strings.Clone(val), allow: false})
 			}
 		case "crawl-delay":
 			if current != nil {
@@ -192,7 +196,7 @@ func parseRobotsTxt(body, agent string) robotsResult {
 			}
 		case "sitemap":
 			if val != "" {
-				sitemaps = append(sitemaps, val)
+				sitemaps = append(sitemaps, strings.Clone(val))
 			}
 		}
 	}
@@ -476,6 +480,10 @@ func (m *Manager) RecordError(domain string) {
 	if s.ConsecutiveErrors >= MaxConsecutiveDead {
 		s.Dead = true
 		dead = true
+		// Release memory held by robots rules and sitemaps — dead domains
+		// are never fetched again so these are pure waste.
+		s.Robots = nil
+		s.RobotsSitemaps = nil
 	} else if s.ConsecutiveErrors >= MaxConsecutiveErrs {
 		// Back off exponentially, capped at 1 hour
 		backoff := time.Duration(1<<min(s.ConsecutiveErrors-MaxConsecutiveErrs, 6)) * time.Minute
@@ -498,6 +506,8 @@ func (m *Manager) RecordDNSError(domain string) {
 		return
 	}
 	s.Dead = true
+	s.Robots = nil
+	s.RobotsSitemaps = nil
 	m.mu.Unlock()
 	m.queue.DropDomain(domain)
 }
@@ -650,22 +660,19 @@ func (m *Manager) fetchRobots(domain string) (string, error) {
 // Pebble store. Called periodically and on shutdown.
 func (m *Manager) SaveAllState() int {
 	m.mu.RLock()
-	// Snapshot domain names + state under read lock
-	type entry struct {
-		domain string
-		data   []byte
-	}
-	entries := make([]entry, 0, len(m.domains))
+	// Encode + write directly under read lock, reusing single buffers for
+	// both the 46-byte state encoding and the Pebble key. Pebble.Set copies
+	// key+value internally so the buffers are safe to reuse immediately.
+	// This avoids 2.6M+ allocations (1.3M × 2) that the old approach created.
+	valBuf := make([]byte, stateEncodingSize)
+	keyBuf := make([]byte, 0, 256) // reused for Pebble metaKey
+	count := len(m.domains)
 	for d, s := range m.domains {
-		data := encodeState(s)
-		entries = append(entries, entry{domain: d, data: data})
+		encodeStateBuf(s, valBuf)
+		keyBuf = m.queue.SaveMetaBuf(d, valBuf, keyBuf)
 	}
 	m.mu.RUnlock()
-
-	for _, e := range entries {
-		m.queue.SaveMeta(e.domain, e.data)
-	}
-	return len(entries)
+	return count
 }
 
 // RestoreAllState loads persisted domain metadata from Pebble and
@@ -704,6 +711,13 @@ const stateEncodingSize = 46
 
 func encodeState(s *State) []byte {
 	buf := make([]byte, stateEncodingSize)
+	encodeStateBuf(s, buf)
+	return buf
+}
+
+// encodeStateBuf encodes domain state into an existing buffer (must be >= stateEncodingSize).
+// Used by SaveAllState to reuse a single buffer across 1M+ domains.
+func encodeStateBuf(s *State, buf []byte) {
 	buf[0] = 1 // version
 
 	var flags byte
@@ -721,7 +735,6 @@ func encodeState(s *State) []byte {
 	binary.LittleEndian.PutUint64(buf[26:], uint64(s.LastFetch.UnixNano()))
 	binary.LittleEndian.PutUint64(buf[34:], uint64(s.BackoffUntil.UnixNano()))
 	binary.LittleEndian.PutUint32(buf[42:], uint32(s.ConsecutiveErrors))
-	return buf
 }
 
 func decodeState(data []byte) *State {

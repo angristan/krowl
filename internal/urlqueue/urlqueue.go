@@ -298,6 +298,22 @@ func (q *Queue) SaveMeta(domain string, data []byte) {
 	_ = q.db.Set(metaKey(domain), data, pebble.NoSync)
 }
 
+// SaveMetaBuf is like SaveMeta but reuses a caller-provided key buffer
+// to avoid allocating a new []byte per call. The buffer is grown if needed
+// and the (possibly grown) buffer is returned.
+func (q *Queue) SaveMetaBuf(domain string, data []byte, keyBuf []byte) []byte {
+	needed := 1 + len(domain)
+	if cap(keyBuf) < needed {
+		keyBuf = make([]byte, needed)
+	} else {
+		keyBuf = keyBuf[:needed]
+	}
+	keyBuf[0] = metaPrefix
+	copy(keyBuf[1:], domain)
+	_ = q.db.Set(keyBuf, data, pebble.NoSync)
+	return keyBuf
+}
+
 // LoadMeta retrieves metadata for a domain. Returns nil if not found.
 func (q *Queue) LoadMeta(domain string) []byte {
 	val, closer, err := q.db.Get(metaKey(domain))

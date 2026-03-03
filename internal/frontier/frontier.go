@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// entryPool recycles Entry structs to reduce GC pressure.
+// Frontier.Push was 12.65% of inuse_objects in profiling — each pop+push
+// cycle allocated a new Entry that the GC had to scan and collect.
+var entryPool = sync.Pool{
+	New: func() any { return &Entry{} },
+}
+
 // Entry represents a domain in the priority queue.
 type Entry struct {
 	Domain    string
@@ -47,10 +54,10 @@ func (f *Frontier) Push(domain string, nextFetch time.Time) {
 		return
 	}
 
-	e := &Entry{
-		Domain:    domain,
-		NextFetch: nextFetch,
-	}
+	e := entryPool.Get().(*Entry)
+	e.Domain = domain
+	e.NextFetch = nextFetch
+	e.index = 0
 	heap.Push(&f.h, e)
 	f.idx[domain] = e
 }
@@ -74,7 +81,11 @@ func (f *Frontier) PopReady() (string, time.Duration) {
 
 	e := heap.Pop(&f.h).(*Entry)
 	delete(f.idx, e.Domain)
-	return e.Domain, 0
+	domain := e.Domain
+	// Return entry to pool; clear references to allow GC of the domain string
+	e.Domain = ""
+	entryPool.Put(e)
+	return domain, 0
 }
 
 // Peek returns the next-fetch time of the earliest domain without popping.
@@ -96,6 +107,8 @@ func (f *Frontier) Remove(domain string) {
 	if e, ok := f.idx[domain]; ok {
 		heap.Remove(&f.h, e.index)
 		delete(f.idx, domain)
+		e.Domain = ""
+		entryPool.Put(e)
 	}
 }
 
