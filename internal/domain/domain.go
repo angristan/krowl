@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"github.com/stanislas/krowl/internal/metrics"
 	"github.com/stanislas/krowl/internal/sitemap"
 	"github.com/stanislas/krowl/internal/urlqueue"
-	"github.com/temoto/robotstxt"
 )
 
 const (
@@ -26,8 +26,8 @@ const (
 	MaxCrawlDelay      = 30 * time.Second       // ceiling: give up sooner rather than crawling glacially
 	RobotsExpiry       = 24 * time.Hour
 	RobotsMaxSize      = 512 * 1024 // 512KB
-	MaxConsecutiveErrs = 10         // start exponential backoff after this many
-	MaxConsecutiveDead = 30         // permanently give up on a domain after this many
+	MaxConsecutiveErrs = 5          // start exponential backoff after this many
+	MaxConsecutiveDead = 10         // permanently give up on a domain after this many
 
 	MaxQueuePerDomain  = 1000       // cap URLs queued per domain (prevents crawler traps + forces diversity)
 	DefaultMaxFrontier = 50_000_000 // default global cap on total queued URLs (disk-backed, no memory concern)
@@ -39,14 +39,196 @@ const (
 	AdaptiveMultiplier = 5
 )
 
+// robotsRule is a compact representation of a single robots.txt rule.
+// It stores only the path pattern and allow/disallow flag — no compiled
+// regexes. Robots.txt wildcards (* and $) are matched inline.
+type robotsRule struct {
+	pattern string // path pattern (may contain * and $)
+	allow   bool
+}
+
+// robotsRules is a compact replacement for *robotstxt.Group that does NOT
+// hold references to the parsed robotstxt data or compiled regexes.
+// Matching follows Google's spec: longest path match wins.
+type robotsRules struct {
+	rules []robotsRule
+}
+
+// test checks if a path is allowed by the rules. Returns true if allowed.
+// Follows Google's robots.txt spec: most specific (longest) match wins,
+// default is allow.
+func (rr *robotsRules) test(path string) bool {
+	if rr == nil || len(rr.rules) == 0 {
+		return true
+	}
+	var bestLen int
+	allowed := true
+	for i := range rr.rules {
+		r := &rr.rules[i]
+		if matchRobotsPattern(path, r.pattern) {
+			l := len(r.pattern)
+			if l > bestLen {
+				bestLen = l
+				allowed = r.allow
+			}
+		}
+	}
+	return allowed
+}
+
+// matchRobotsPattern matches a path against a robots.txt pattern.
+// Supports * (any sequence) and $ (end anchor). Without wildcards,
+// it's a simple prefix match.
+func matchRobotsPattern(path, pattern string) bool {
+	// Fast path: no wildcards → prefix match
+	if !strings.Contains(pattern, "*") && !strings.HasSuffix(pattern, "$") {
+		return strings.HasPrefix(path, pattern)
+	}
+
+	// Strip end anchor
+	anchored := strings.HasSuffix(pattern, "$")
+	if anchored {
+		pattern = pattern[:len(pattern)-1]
+	}
+
+	// Split on * and match each segment in order
+	parts := strings.Split(pattern, "*")
+	pos := 0
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		if i == 0 {
+			// First segment must match at start
+			if !strings.HasPrefix(path[pos:], part) {
+				return false
+			}
+			pos += len(part)
+		} else {
+			// Subsequent segments match anywhere after current pos
+			idx := strings.Index(path[pos:], part)
+			if idx < 0 {
+				return false
+			}
+			pos += idx + len(part)
+		}
+	}
+	if anchored {
+		return pos == len(path)
+	}
+	return true
+}
+
+// robotsResult holds the output of our lightweight robots.txt parser.
+type robotsResult struct {
+	rules      *robotsRules
+	crawlDelay time.Duration
+	sitemaps   []string
+}
+
+// parseRobotsTxt parses a robots.txt body and returns rules for the
+// given user-agent. This replaces temoto/robotstxt to avoid allocating
+// compiled regexes and large parsed ASTs that pin memory.
+//
+// Implements Google's spec: most specific user-agent match wins,
+// * is the fallback. Rules use longest-path-match precedence.
+func parseRobotsTxt(body, agent string) robotsResult {
+	agent = strings.ToLower(agent)
+
+	type group struct {
+		agents     []string
+		rules      []robotsRule
+		crawlDelay time.Duration
+	}
+
+	var (
+		groups   []group
+		current  *group
+		sitemaps []string
+	)
+
+	for _, rawLine := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(rawLine)
+
+		// Strip comments
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		if line == "" {
+			continue
+		}
+
+		// Split on first ':'
+		idx := strings.IndexByte(line, ':')
+		if idx < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(line[:idx]))
+		val := strings.TrimSpace(line[idx+1:])
+
+		switch key {
+		case "user-agent":
+			ua := strings.ToLower(val)
+			// If previous directive was also user-agent, extend the group
+			if current != nil && len(current.rules) == 0 {
+				current.agents = append(current.agents, ua)
+			} else {
+				groups = append(groups, group{agents: []string{ua}})
+				current = &groups[len(groups)-1]
+			}
+		case "allow":
+			if current != nil && val != "" {
+				current.rules = append(current.rules, robotsRule{pattern: val, allow: true})
+			}
+		case "disallow":
+			if current != nil && val != "" {
+				current.rules = append(current.rules, robotsRule{pattern: val, allow: false})
+			}
+		case "crawl-delay":
+			if current != nil {
+				if secs, err := strconv.ParseFloat(val, 64); err == nil && secs > 0 {
+					current.crawlDelay = time.Duration(secs * float64(time.Second))
+				}
+			}
+		case "sitemap":
+			if val != "" {
+				sitemaps = append(sitemaps, val)
+			}
+		}
+	}
+
+	// Find best matching group: longest agent prefix match wins, * is fallback.
+	var best *group
+	bestLen := 0
+	for i := range groups {
+		g := &groups[i]
+		for _, a := range g.agents {
+			if a == "*" && bestLen == 0 {
+				best = g
+				bestLen = 1
+			} else if a != "*" && strings.HasPrefix(agent, a) && len(a) > bestLen {
+				best = g
+				bestLen = len(a)
+			}
+		}
+	}
+
+	result := robotsResult{sitemaps: sitemaps}
+	if best != nil {
+		result.rules = &robotsRules{rules: best.rules}
+		result.crawlDelay = best.crawlDelay
+	}
+	return result
+}
+
 // State holds all per-domain crawl state.
 type State struct {
-	// robots.txt — only the group for our user-agent is retained.
-	// The full *robotstxt.RobotsData is parsed then released to avoid
-	// holding compiled regexes for every rule in memory (~10KB+ per domain,
-	// which at 800K+ domains = multi-GB heap).
-	RobotsGroup    *robotstxt.Group // cached group for our user-agent
-	RobotsSitemaps []string         // Sitemap: directives extracted from robots.txt
+	// robots.txt — stored as compact rules without compiled regexes.
+	// The full *robotstxt.RobotsData and *robotstxt.Group are parsed
+	// then discarded. Only path strings + allow/deny are retained.
+	// This saves ~10KB+ per domain (at 1M+ domains = multi-GB heap).
+	Robots         *robotsRules // compact allow/disallow rules
+	RobotsSitemaps []string     // Sitemap: directives extracted from robots.txt
 	RobotsExpiry   time.Time
 
 	// Rate limiting
@@ -178,10 +360,10 @@ func (m *Manager) QueueLen(domain string) int {
 func (m *Manager) IsAllowed(d, path string) (bool, error) {
 	m.mu.RLock()
 	s, ok := m.domains[d]
-	robotsValid := ok && s.RobotsGroup != nil && time.Now().Before(s.RobotsExpiry)
-	var group *robotstxt.Group
+	robotsValid := ok && s.Robots != nil && time.Now().Before(s.RobotsExpiry)
+	var rules *robotsRules
 	if robotsValid {
-		group = s.RobotsGroup
+		rules = s.Robots
 	}
 	m.mu.RUnlock()
 
@@ -192,26 +374,18 @@ func (m *Manager) IsAllowed(d, path string) (bool, error) {
 			return true, nil
 		}
 
-		robots, err := robotstxt.FromBytes([]byte(body))
-		if err != nil {
-			// Malformed robots.txt: allow by default
-			return true, nil
-		}
-
-		group = robots.FindGroup(m.userAgent)
+		parsed := parseRobotsTxt(body, m.userAgent)
+		rules = parsed.rules
 
 		m.mu.Lock()
 		s = m.getOrCreateLocked(d)
-		s.RobotsGroup = group
-		s.RobotsSitemaps = robots.Sitemaps // extract before releasing
+		s.Robots = rules
+		s.RobotsSitemaps = parsed.sitemaps
 		s.RobotsExpiry = time.Now().Add(RobotsExpiry)
-		// Note: the full *robotstxt.RobotsData (with compiled regexes) is
-		// NOT stored — only the Group and Sitemaps are retained.
-		// This saves ~10KB+ per domain in heap.
 
 		// Store robots.txt crawl-delay as a floor for adaptive rate
-		if group.CrawlDelay > 0 {
-			s.RobotsCrawlDelay = time.Duration(group.CrawlDelay)
+		if parsed.crawlDelay > 0 {
+			s.RobotsCrawlDelay = parsed.crawlDelay
 			if s.RobotsCrawlDelay > s.CrawlDelay {
 				s.CrawlDelay = s.RobotsCrawlDelay
 			}
@@ -231,7 +405,7 @@ func (m *Manager) IsAllowed(d, path string) (bool, error) {
 		}
 	}
 
-	return group.Test(path), nil
+	return rules.test(path), nil
 }
 
 // CanFetch checks if we can fetch from this domain now (rate limiting).
@@ -311,6 +485,21 @@ func (m *Manager) RecordError(domain string) {
 	if dead {
 		m.queue.DropDomain(domain) // free disk
 	}
+}
+
+// RecordDNSError marks a domain as permanently dead immediately.
+// DNS NXDOMAIN / no records means the domain doesn't exist — no point
+// retrying it 10 times with exponential backoff.
+func (m *Manager) RecordDNSError(domain string) {
+	m.mu.Lock()
+	s := m.getOrCreateLocked(domain)
+	if s.Dead {
+		m.mu.Unlock()
+		return
+	}
+	s.Dead = true
+	m.mu.Unlock()
+	m.queue.DropDomain(domain)
 }
 
 // IsDead returns true if a domain has been permanently abandoned due

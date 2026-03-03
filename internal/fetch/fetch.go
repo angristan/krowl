@@ -36,6 +36,9 @@ var errNonRetryable = errors.New("non-retryable")
 // networkErrCount is used to sample network error logging (log every 100th).
 var networkErrCount atomic.Int64
 
+// otherErrCount logs the first 10 "other" errors at INFO to diagnose unclassified errors.
+var otherErrCount atomic.Int64
+
 const (
 	FetchTimeout = 5 * time.Second
 	MaxBodySize  = 1 * 1024 * 1024 // 1MB
@@ -161,13 +164,19 @@ func (p *Pool) fetchLoop(ctx context.Context, id int) {
 
 		// Fetch with retries on transient errors
 		fetchStart := time.Now()
-		result, err := p.fetchWithRetry(ctx, rawURL, d)
+		result, fetchErr := p.fetchWithRetry(ctx, rawURL, d)
 		latency := time.Since(fetchStart)
-		if err != nil {
+		if fetchErr != nil {
 			p.domains.RecordFetch(d, latency)
-			p.domains.RecordError(d)
-			if p.domains.IsDead(d) {
+			// DNS NXDOMAIN: kill domain immediately, no point retrying
+			if classifyNetworkError(fetchErr) == "dns_nxdomain" {
+				p.domains.RecordDNSError(d)
 				m.DomainsDead.Inc()
+			} else {
+				p.domains.RecordError(d)
+				if p.domains.IsDead(d) {
+					m.DomainsDead.Inc()
+				}
 			}
 			p.repushIfNeeded(d)
 			continue
@@ -216,6 +225,10 @@ func (p *Pool) fetchWithRetry(ctx context.Context, rawURL, d string) (*Result, e
 		}
 		lastErr = err
 		if errors.Is(err, errNonRetryable) {
+			return nil, err
+		}
+		// DNS NXDOMAIN is permanent — don't retry
+		if classifyNetworkError(err) == "dns_nxdomain" {
 			return nil, err
 		}
 	}
@@ -282,6 +295,11 @@ func (p *Pool) fetch(ctx context.Context, rawURL, d string) (*Result, error) {
 		m.FetchErrors.WithLabelValues("network").Inc()
 		cause := classifyNetworkError(err)
 		m.NetworkErrors.WithLabelValues(cause).Inc()
+		if cause == "other" {
+			if n := otherErrCount.Add(1); n <= 10 {
+				slog.Info("unclassified network error", "url", rawURL, "error", err, "type", fmt.Sprintf("%T", err))
+			}
+		}
 		if n := networkErrCount.Add(1); n%100 == 1 {
 			slog.Debug("fetch network error sample", "url", rawURL, "cause", cause, "error", err)
 		}
@@ -455,9 +473,13 @@ func classifyNetworkError(err error) string {
 		}
 	}
 
-	// TLS errors (string match as Go doesn't export typed TLS errors)
+	// String-based matching for errors wrapped by gowarc or lacking typed errors.
 	errStr := err.Error()
 	switch {
+	case strings.Contains(errStr, "no TYPE=A record found"),
+		strings.Contains(errStr, "failed to resolve DNS"),
+		strings.Contains(errStr, "no such host"):
+		return "dns_nxdomain"
 	case strings.Contains(errStr, "tls:"):
 		return "tls_error"
 	case strings.Contains(errStr, "certificate"):
@@ -468,6 +490,8 @@ func classifyNetworkError(err error) string {
 		return "too_many_redirects"
 	case strings.Contains(errStr, "connection reset"):
 		return "conn_reset"
+	case strings.Contains(errStr, "connection refused"):
+		return "conn_refused"
 	}
 
 	return "other"

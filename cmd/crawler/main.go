@@ -280,7 +280,7 @@ func main() {
 			"software": userAgent,
 		},
 		Prefix:             "KROWL",
-		Compression:        "gzip",
+		Compression:        "GZIP",
 		WARCWriterPoolSize: *warcPoolSize,
 		WARCSize:           *warcSizeMB,
 		OutputDirectory:    *warcDir,
