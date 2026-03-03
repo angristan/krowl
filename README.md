@@ -6,13 +6,19 @@ Distributed web crawler. Each node is self-sufficient with local Pebble storage.
 
 ```mermaid
 flowchart LR
-    Seeds --> Frontier["Frontier\n(min-heap)"]
-    Frontier --> Fetch["Fetch workers\n750 goroutines"]
-    Fetch --> Parse["Parse workers\nauto-scaled"]
-    Fetch -- transparent --> WARC["WARC\nJuiceFS"]
-    Parse --> Dedup["URL dedup\nbloom + Pebble"]
+    Seeds --> Frontier["Frontier
+    (min-heap)"]
+    Frontier --> Fetch["Fetch workers
+    750 goroutines"]
+    Fetch --> Parse["Parse workers
+    auto-scaled"]
+    Fetch -- transparent --> WARC["WARC
+    JuiceFS"]
+    Parse --> Dedup["URL dedup
+    bloom + Pebble"]
     Dedup -- local domain --> Frontier
-    Dedup -- remote domain --> Redis["Redis inbox\npeer node"]
+    Dedup -- remote domain --> Redis["Redis inbox
+    peer node"]
 ```
 
 **Distributed mode:** Consul hash ring shards domains across nodes. Cross-shard URLs forwarded via Redis inbox. Each node runs: crawler + local Redis + Pebble + JuiceFS mount.
