@@ -52,6 +52,7 @@ WARC recording is transparent: gowarc wraps every TCP connection with `TeeReader
 - **TLS metrics via context** — `TLSInfo` struct stashed in request context; the patched `DialTLSContext` extracts TLS version/cipher from utls via reflection.
 - **Content-type filtering** — Only processes HTML responses
 - **Retry logic** — Retries transient errors (5xx, timeouts, connection resets)
+- **429 rate-limit handling** — On HTTP 429, calls `RecordRateLimit` (doubles crawl delay, respects `Retry-After`), re-enqueues the URL, and skips `RecordFetch` so the backoff isn't immediately undone by adaptive delay
 
 ## API
 

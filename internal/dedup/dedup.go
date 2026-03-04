@@ -85,7 +85,7 @@ func (d *Dedup) IsNew(rawURL string) bool {
 	// New URL. Mark in both bloom + Pebble.
 	m.DedupNewURLs.Inc()
 	d.bloom.Add(key)
-	_ = d.pebble.Set(key, pebbleOne, pebble.Sync)
+	_ = d.pebble.Set(key, pebbleOne, pebble.NoSync)
 	return true
 }
 
@@ -95,7 +95,7 @@ func (d *Dedup) IsNew(rawURL string) bool {
 func (d *Dedup) MarkSeen(rawURL string) {
 	key := urlKey(rawURL)
 	d.bloom.Add(key)
-	_ = d.pebble.Set(key, pebbleOne, pebble.Sync)
+	_ = d.pebble.Set(key, pebbleOne, pebble.NoSync)
 }
 
 // Metrics returns the underlying Pebble metrics.

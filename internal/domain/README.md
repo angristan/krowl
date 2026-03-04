@@ -51,10 +51,10 @@ Per-domain crawl state management: robots.txt caching, adaptive rate limiting, e
 | `MaxCrawlDelay` | 30s | Ceiling for adaptive delay |
 | `AdaptiveMultiplier` | 5 | Delay = latency * 5 |
 | `MaxQueuePerDomain` | 1K | Per-domain URL queue cap (forces domain diversity) |
-| `DefaultMaxFrontier` | 2M | Global URL queue cap (backpressure) |
+| `DefaultMaxFrontier` | 50M | Global URL queue cap (disk-backed, no memory concern) |
 | `MaxURLLength` | 2048 | Reject URLs longer than this |
 | `MaxCrawlDepth` | 25 | Maximum hops from seed |
-| `MaxConsecutiveDead` | 30 | Give up on a domain after this many consecutive errors |
+| `MaxConsecutiveDead` | 10 | Give up on a domain after this many consecutive errors |
 
 ## Rate limiting
 
@@ -64,13 +64,17 @@ Adaptive crawl delay based on response latency EMA: `delay = max(MinCrawlDelay, 
 
 - `NewManager(userAgent, maxFrontier)` — Create manager with global frontier cap
 - `Enqueue(domain, url, depth)` / `Dequeue(domain)` — Per-domain FIFO with backpressure
+- `EnqueueBatch(items, depth)` — Batch enqueue in a single bbolt txn (used for seed loading)
+- `EnqueueBatchWithDepth(items)` — Batch enqueue with per-item depth (used by inbox consumer)
 - `IsAllowed(domain, path)` — robots.txt check (fetches and caches on miss, triggers sitemap discovery)
 - `CanFetch(domain)` / `RecordFetch(domain, latency)` — Rate limiting
+- `RecordRateLimit(domain, retryAfter)` — Handle 429 responses (doubles crawl delay, sets backoff)
 - `RecordError(domain)` — Error tracking with exponential backoff
-- `Snapshot()` / `RestoreQueues()` — Checkpoint support
+- `SaveAllState()` / `IterMeta()` — Persist/restore domain state via bbolt metadata
 
 ## Dependencies
 
 - `internal/frontier`
+- `internal/urlqueue`
 - `internal/sitemap`
 - `temoto/robotstxt`

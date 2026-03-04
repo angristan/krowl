@@ -39,9 +39,10 @@ depth\turl
 - `UpdatePeers(nodes)` — Refreshes Redis connections on topology change (from Consul watcher)
 
 ### Consumer
-- Polls local Redis inbox in batches (500 items, 50ms interval)
-- Dedup-checks URLs before enqueuing
-- `Run(ctx)` — Blocking loop until context cancelled
+- Spawns 8 parallel drain goroutines, each polling Redis in batches (500 items, 50ms interval)
+- Phase 1: bloom-filter the batch (fast, in-memory) to find genuinely new URLs
+- Phase 2: batch-enqueue new URLs via `EnqueueBatchWithDepth` (single bbolt txn)
+- `Run(ctx)` — Blocking until context cancelled
 
 ## API
 
