@@ -308,8 +308,9 @@ providers:
       foldersFromFilesStructure: false
 DASH
 
-# Decode and install krowl dashboard
-echo "${grafana_dashboard_b64}" | base64 -d >/var/lib/grafana/dashboards/krowl.json
+# Download krowl dashboard from GitHub
+curl -fsSL https://raw.githubusercontent.com/angristan/krowl/main/monitoring/grafana/dashboards/krowl.json \
+	-o /var/lib/grafana/dashboards/krowl.json
 chown -R grafana:grafana /var/lib/grafana/dashboards
 
 systemctl enable grafana-server
