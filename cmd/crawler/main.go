@@ -208,7 +208,7 @@ func main() {
 
 	if *standalone {
 		// Standalone: single node owns everything, no Consul, no Redis
-		hashRing.SetNodes([]ring.Node{{ID: *nodeID, Addr: "localhost"}})
+		hashRing.SetNodes([]ring.Node{{ID: *nodeID}})
 		sender = inbox.NewSender(hashRing, *nodeID, dd)
 		slog.Info("standalone mode: Consul and Redis disabled")
 	} else {
@@ -240,7 +240,7 @@ func main() {
 		updateTopology(consulClient, hashRing, sender, *nodeID)
 		// Consul health check may not have passed yet, so ensure self is
 		// in the ring for correct seed distribution.
-		hashRing.EnsureNode(ring.Node{ID: *nodeID, Addr: fmt.Sprintf("localhost:%d", *metricsPort)})
+		hashRing.EnsureNode(ring.Node{ID: *nodeID})
 	}
 	defer func() {
 		if sender != nil {
@@ -460,7 +460,6 @@ func updateTopology(client *consul.Client, hashRing *ring.Ring, sender *inbox.Se
 
 		nodes = append(nodes, ring.Node{
 			ID:        nodeID,
-			Addr:      fmt.Sprintf("%s:%d", addr, svc.Service.Port),
 			RedisAddr: redisAddr,
 		})
 	}
@@ -509,7 +508,6 @@ func watchTopology(ctx context.Context, client *consul.Client, hashRing *ring.Ri
 				}
 				nodes = append(nodes, ring.Node{
 					ID:        nodeID,
-					Addr:      fmt.Sprintf("%s:%d", addr, svc.Service.Port),
 					RedisAddr: redisAddr,
 				})
 			}
