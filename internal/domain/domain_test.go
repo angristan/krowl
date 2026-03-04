@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -10,12 +9,12 @@ import (
 	"github.com/stanislas/krowl/internal/urlqueue"
 )
 
-// newTestManager creates a Manager with a temp Pebble-backed URL queue.
+// newTestManager creates a Manager with a temp sharded URL queue.
 // The queue is closed and temp dir cleaned up when the test ends.
 func newTestManager(t *testing.T, maxFrontier int) *Manager {
 	t.Helper()
 	dir := t.TempDir()
-	q, err := urlqueue.Open(filepath.Join(dir, "queue.db"))
+	q, err := urlqueue.OpenSharded(dir)
 	if err != nil {
 		t.Fatalf("failed to open urlqueue: %v", err)
 	}

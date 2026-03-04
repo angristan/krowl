@@ -56,7 +56,7 @@ func main() {
 		metricsPort     = flag.Int("metrics-port", 9090, "Prometheus metrics port")
 		expectedURLs    = flag.Int("expected-urls", 50_000_000, "Expected total URLs for bloom filter sizing")
 		warcDir         = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
-		urlqueuePath    = flag.String("urlqueue", "/var/lib/krowl/urlqueue.db", "Path to bbolt URL queue file")
+		urlqueuePath    = flag.String("urlqueue", "/var/lib/krowl/urlqueue", "Path to bbolt URL queue directory (sharded)")
 		fetchWorkersF   = flag.Int("fetch-workers", 750, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
 		parseWorkersMax = flag.Int("parse-workers-max", 64, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
@@ -171,14 +171,14 @@ func main() {
 	}
 	slog.Info("bloom filter warmed from Pebble", "urls", nWarmed, "duration", time.Since(warmStart))
 
-	// URL queue (bbolt-backed per-domain URL queues)
-	uq, err := urlqueue.Open(*urlqueuePath)
+	// URL queue (sharded bbolt-backed per-domain URL queues)
+	uq, err := urlqueue.OpenSharded(*urlqueuePath)
 	if err != nil {
 		slog.Error("failed to open URL queue", "error", err)
 		os.Exit(1)
 	}
 	defer func() { _ = uq.Close() }()
-	slog.Info("URL queue opened", "path", *urlqueuePath, "queued_urls", uq.TotalLen(), "domains", uq.DomainCount())
+	slog.Info("URL queue opened", "path", *urlqueuePath, "shards", urlqueue.NumShards, "queued_urls", uq.TotalLen(), "domains", uq.DomainCount())
 
 	// Domain manager
 	dm := domain.NewManager(userAgent, *maxFrontier, uq)
@@ -668,15 +668,27 @@ func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontie
 			}
 			m.PebbleTotalKeys.WithLabelValues("dedup").Set(float64(totalKeys))
 
-			// bbolt internals (URL queue)
-			if fi, err := os.Stat(dm.URLQueue().DBPath()); err == nil {
-				m.BboltDiskSizeBytes.Set(float64(fi.Size()))
+			// bbolt internals (URL queue — aggregated across shards)
+			var totalDiskSize int64
+			paths := dm.URLQueue().DBPaths()
+			for _, p := range paths {
+				if fi, err := os.Stat(p); err == nil {
+					totalDiskSize += fi.Size()
+				}
 			}
-			bs := dm.URLQueue().Stats()
-			m.BboltFreePages.Set(float64(bs.FreePageN))
-			m.BboltPendingPages.Set(float64(bs.PendingPageN))
-			m.BboltFreeAllocBytes.Set(float64(bs.FreeAlloc))
-			m.BboltOpenReaders.Set(float64(bs.OpenTxN))
+			m.BboltDiskSizeBytes.Set(float64(totalDiskSize))
+			allStats := dm.URLQueue().Stats()
+			var freePages, pendingPages, freeAlloc, openReaders int
+			for _, bs := range allStats {
+				freePages += bs.FreePageN
+				pendingPages += bs.PendingPageN
+				freeAlloc += bs.FreeAlloc
+				openReaders += bs.OpenTxN
+			}
+			m.BboltFreePages.Set(float64(freePages))
+			m.BboltPendingPages.Set(float64(pendingPages))
+			m.BboltFreeAllocBytes.Set(float64(freeAlloc))
+			m.BboltOpenReaders.Set(float64(openReaders))
 		}
 	}
 }

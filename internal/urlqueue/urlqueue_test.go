@@ -3,6 +3,7 @@ package urlqueue
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -371,6 +372,244 @@ func TestDeleteMeta(t *testing.T) {
 
 	if q.LoadMeta("example.com") != nil {
 		t.Fatal("expected nil after DeleteMeta")
+	}
+}
+
+// --- Sharded queue tests ---
+
+func openTestShardedQueue(t *testing.T) *ShardedQueue {
+	t.Helper()
+	dir := t.TempDir()
+	sq, err := OpenSharded(filepath.Join(dir, "shards"))
+	if err != nil {
+		t.Fatalf("OpenSharded() error: %v", err)
+	}
+	t.Cleanup(func() { _ = sq.Close() })
+	return sq
+}
+
+func TestSharded_EnqueueDequeue(t *testing.T) {
+	sq := openTestShardedQueue(t)
+
+	sq.Enqueue("example.com", "https://example.com/a", 0, 0, 0)
+	sq.Enqueue("example.com", "https://example.com/b", 1, 0, 0)
+	sq.Enqueue("other.org", "https://other.org/x", 2, 0, 0)
+
+	if sq.TotalLen() != 3 {
+		t.Fatalf("TotalLen: got %d, want 3", sq.TotalLen())
+	}
+
+	got, ok := sq.Dequeue("example.com")
+	if !ok || got.URL != "https://example.com/a" || got.Depth != 0 {
+		t.Fatalf("first dequeue: got %+v, ok=%v", got, ok)
+	}
+	got, ok = sq.Dequeue("example.com")
+	if !ok || got.URL != "https://example.com/b" || got.Depth != 1 {
+		t.Fatalf("second dequeue: got %+v, ok=%v", got, ok)
+	}
+	got, ok = sq.Dequeue("other.org")
+	if !ok || got.URL != "https://other.org/x" || got.Depth != 2 {
+		t.Fatalf("other.org dequeue: got %+v, ok=%v", got, ok)
+	}
+
+	_, ok = sq.Dequeue("example.com")
+	if ok {
+		t.Fatal("expected ok=false from exhausted queue")
+	}
+}
+
+func TestSharded_CrossShardAggregation(t *testing.T) {
+	sq := openTestShardedQueue(t)
+
+	// Enqueue to many domains to ensure spread across shards.
+	domains := []string{"a.com", "b.com", "c.com", "d.com", "e.com", "f.com", "g.com", "h.com"}
+	for _, d := range domains {
+		sq.Enqueue(d, fmt.Sprintf("https://%s/1", d), 0, 0, 0)
+	}
+
+	if sq.TotalLen() != int64(len(domains)) {
+		t.Fatalf("TotalLen: got %d, want %d", sq.TotalLen(), len(domains))
+	}
+	if sq.DomainCount() != len(domains) {
+		t.Fatalf("DomainCount: got %d, want %d", sq.DomainCount(), len(domains))
+	}
+
+	active := sq.ActiveDomains()
+	sort.Strings(active)
+	sort.Strings(domains)
+	if len(active) != len(domains) {
+		t.Fatalf("ActiveDomains: got %d, want %d", len(active), len(domains))
+	}
+	for i := range domains {
+		if active[i] != domains[i] {
+			t.Fatalf("ActiveDomains[%d]: got %q, want %q", i, active[i], domains[i])
+		}
+	}
+}
+
+func TestSharded_Persistence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shards")
+
+	// First session: enqueue URLs.
+	sq1, err := OpenSharded(dir)
+	if err != nil {
+		t.Fatalf("first OpenSharded() error: %v", err)
+	}
+	sq1.Enqueue("example.com", "https://example.com/a", 0, 0, 0)
+	sq1.Enqueue("example.com", "https://example.com/b", 1, 0, 0)
+	sq1.Enqueue("other.org", "https://other.org/x", 2, 0, 0)
+	sq1.SaveMeta("example.com", []byte("meta1"))
+	if err := sq1.Close(); err != nil {
+		t.Fatalf("first Close() error: %v", err)
+	}
+
+	// Second session: reopen and verify.
+	sq2, err := OpenSharded(dir)
+	if err != nil {
+		t.Fatalf("second OpenSharded() error: %v", err)
+	}
+	defer func() { _ = sq2.Close() }()
+
+	if sq2.TotalLen() != 3 {
+		t.Fatalf("TotalLen after reopen: got %d, want 3", sq2.TotalLen())
+	}
+
+	got, ok := sq2.Dequeue("example.com")
+	if !ok || got.URL != "https://example.com/a" {
+		t.Fatalf("persistence: first dequeue got %+v, ok=%v", got, ok)
+	}
+
+	meta := sq2.LoadMeta("example.com")
+	if string(meta) != "meta1" {
+		t.Fatalf("persistence: LoadMeta got %q, want %q", meta, "meta1")
+	}
+}
+
+func TestSharded_Concurrent(t *testing.T) {
+	sq := openTestShardedQueue(t)
+	const goroutines = 50
+	const perGoroutine = 20
+
+	var wg sync.WaitGroup
+
+	// Enqueue goroutines
+	for g := range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			domain := fmt.Sprintf("d%d.com", g)
+			for i := range perGoroutine {
+				sq.Enqueue(domain, fmt.Sprintf("https://%s/%d", domain, i), 0, 0, 0)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if sq.TotalLen() != goroutines*perGoroutine {
+		t.Fatalf("after enqueue: TotalLen=%d, want %d", sq.TotalLen(), goroutines*perGoroutine)
+	}
+
+	// Dequeue goroutines
+	var dequeued atomic.Int64
+	for g := range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			domain := fmt.Sprintf("d%d.com", g)
+			for {
+				_, ok := sq.Dequeue(domain)
+				if !ok {
+					break
+				}
+				dequeued.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if dequeued.Load() != goroutines*perGoroutine {
+		t.Fatalf("dequeued %d, want %d", dequeued.Load(), goroutines*perGoroutine)
+	}
+	if sq.TotalLen() != 0 {
+		t.Fatalf("after dequeue: TotalLen=%d, want 0", sq.TotalLen())
+	}
+}
+
+func TestSharded_GlobalCap(t *testing.T) {
+	sq := openTestShardedQueue(t)
+
+	for i := range 3 {
+		sq.Enqueue(fmt.Sprintf("d%d.com", i), fmt.Sprintf("https://d%d.com/1", i), 0, 0, 3)
+	}
+	ok := sq.Enqueue("extra.com", "https://extra.com/1", 0, 0, 3)
+	if ok {
+		t.Fatal("enqueue over global cap should return false")
+	}
+	if sq.TotalLen() != 3 {
+		t.Fatalf("TotalLen: got %d, want 3", sq.TotalLen())
+	}
+}
+
+func TestSharded_Meta(t *testing.T) {
+	sq := openTestShardedQueue(t)
+
+	// SaveMeta / LoadMeta
+	sq.SaveMeta("a.com", []byte("data-a"))
+	sq.SaveMeta("b.com", []byte("data-b"))
+
+	if string(sq.LoadMeta("a.com")) != "data-a" {
+		t.Fatal("a.com meta mismatch")
+	}
+	if string(sq.LoadMeta("b.com")) != "data-b" {
+		t.Fatal("b.com meta mismatch")
+	}
+
+	// IterMeta
+	got := make(map[string]string)
+	sq.IterMeta(func(domain string, data []byte) {
+		got[domain] = string(data)
+	})
+	if len(got) != 2 || got["a.com"] != "data-a" || got["b.com"] != "data-b" {
+		t.Fatalf("IterMeta: unexpected result %v", got)
+	}
+
+	// DeleteMeta
+	sq.DeleteMeta("a.com")
+	if sq.LoadMeta("a.com") != nil {
+		t.Fatal("expected nil after DeleteMeta")
+	}
+
+	// SaveMetaBatch
+	err := sq.SaveMetaBatch(func(put func(string, []byte)) {
+		put("x.com", []byte("data-x"))
+		put("y.com", []byte("data-y"))
+	})
+	if err != nil {
+		t.Fatalf("SaveMetaBatch error: %v", err)
+	}
+	if string(sq.LoadMeta("x.com")) != "data-x" {
+		t.Fatal("x.com meta mismatch after batch")
+	}
+}
+
+func TestSharded_EnqueueBatch(t *testing.T) {
+	sq := openTestShardedQueue(t)
+
+	err := sq.EnqueueBatch(0, 0, func(enqueue func(string, string, int) bool) {
+		for i := range 10 {
+			domain := fmt.Sprintf("d%d.com", i)
+			enqueue(domain, fmt.Sprintf("https://%s/1", domain), 0)
+		}
+	})
+	if err != nil {
+		t.Fatalf("EnqueueBatch error: %v", err)
+	}
+
+	if sq.TotalLen() != 10 {
+		t.Fatalf("TotalLen after batch: got %d, want 10", sq.TotalLen())
+	}
+	if sq.DomainCount() != 10 {
+		t.Fatalf("DomainCount after batch: got %d, want 10", sq.DomainCount())
 	}
 }
 

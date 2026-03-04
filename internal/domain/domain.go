@@ -259,7 +259,7 @@ type Manager struct {
 	client   *http.Client
 	frontier *frontier.Frontier // if non-nil, domains are pushed here on enqueue
 	sitemap  *sitemap.Fetcher
-	queue    *urlqueue.Queue // bbolt-backed per-domain URL queues
+	queue    *urlqueue.ShardedQueue // sharded bbolt-backed per-domain URL queues
 
 	userAgent   string
 	maxFrontier int64 // global cap; 0 = unlimited
@@ -274,7 +274,7 @@ type Manager struct {
 const maxConcurrentSitemaps = 50
 
 // NewManager creates a domain manager with the given user agent string.
-func NewManager(userAgent string, maxFrontier int, queue *urlqueue.Queue) *Manager {
+func NewManager(userAgent string, maxFrontier int, queue *urlqueue.ShardedQueue) *Manager {
 	return &Manager{
 		domains: make(map[string]*State),
 		client: &http.Client{
@@ -725,8 +725,8 @@ func (m *Manager) TotalQueueLen() int {
 	return int(m.queue.TotalLen())
 }
 
-// URLQueue returns the underlying bbolt-backed URL queue.
-func (m *Manager) URLQueue() *urlqueue.Queue {
+// URLQueue returns the underlying sharded bbolt-backed URL queue.
+func (m *Manager) URLQueue() *urlqueue.ShardedQueue {
 	return m.queue
 }
 
