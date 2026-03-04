@@ -21,6 +21,9 @@ package urlqueue
 
 import (
 	"encoding/binary"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -433,5 +436,241 @@ func (q *Queue) DeleteMeta(domain string) {
 	_ = q.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(metaBucket).Delete([]byte(domain))
 	})
+}
+
+// --- Sharded queue ---
+
+// NumShards is the number of independent bbolt files.
+// 4 gives 4 parallel fsync pipelines for 8-core machines.
+const NumShards = 8
+
+// FNV-64a constants for shard selection.
+const (
+	fnv64aOffset = uint64(14695981039346656037)
+	fnv64aPrime  = uint64(1099511628211)
+)
+
+// ShardedQueue wraps NumShards independent Queue instances.
+// Each shard is a fully independent bbolt file with its own write lock,
+// batch pipeline, and counters. Domains are routed to shards via
+// fnv64a(domain) % NumShards.
+type ShardedQueue struct {
+	shards [NumShards]*Queue
+}
+
+// shardIndex returns the shard index for a domain using FNV-64a.
+func shardIndex(domain string) int {
+	h := fnv64aOffset
+	for i := 0; i < len(domain); i++ {
+		h ^= uint64(domain[i])
+		h *= fnv64aPrime
+	}
+	return int(h % NumShards)
+}
+
+// OpenSharded creates or opens a sharded URL queue. Each shard is stored
+// as dir/shard-{0..N-1}.db. The directory is created if it doesn't exist.
+func OpenSharded(dir string) (*ShardedQueue, error) {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("urlqueue: mkdir %s: %w", dir, err)
+	}
+
+	sq := &ShardedQueue{}
+	for i := range NumShards {
+		path := filepath.Join(dir, fmt.Sprintf("shard-%d.db", i))
+		q, err := Open(path)
+		if err != nil {
+			// Close any already-opened shards.
+			for j := range i {
+				_ = sq.shards[j].Close()
+			}
+			return nil, fmt.Errorf("urlqueue: open shard %d: %w", i, err)
+		}
+		sq.shards[i] = q
+	}
+	return sq, nil
+}
+
+// --- Single-domain methods: route to shards[shardIndex(domain)] ---
+
+// Enqueue adds a URL to a domain's queue. Returns false if the
+// per-domain cap or global cap would be exceeded.
+func (sq *ShardedQueue) Enqueue(domain, rawURL string, depth, maxPerDomain int, maxTotal int64) bool {
+	if maxTotal > 0 && sq.TotalLen() >= maxTotal {
+		return false
+	}
+	return sq.shards[shardIndex(domain)].Enqueue(domain, rawURL, depth, maxPerDomain, 0)
+}
+
+// Dequeue pops the next URL from a domain's queue.
+func (sq *ShardedQueue) Dequeue(domain string) (Item, bool) {
+	return sq.shards[shardIndex(domain)].Dequeue(domain)
+}
+
+// HasURLs returns true if the domain has any queued URLs.
+func (sq *ShardedQueue) HasURLs(domain string) bool {
+	return sq.shards[shardIndex(domain)].HasURLs(domain)
+}
+
+// QueueLen returns the number of URLs queued for a domain.
+func (sq *ShardedQueue) QueueLen(domain string) int {
+	return sq.shards[shardIndex(domain)].QueueLen(domain)
+}
+
+// DropDomain removes all queued URLs for a domain.
+func (sq *ShardedQueue) DropDomain(domain string) {
+	sq.shards[shardIndex(domain)].DropDomain(domain)
+}
+
+// SaveMeta stores opaque metadata for a domain.
+func (sq *ShardedQueue) SaveMeta(domain string, data []byte) {
+	sq.shards[shardIndex(domain)].SaveMeta(domain, data)
+}
+
+// LoadMeta retrieves metadata for a domain.
+func (sq *ShardedQueue) LoadMeta(domain string) []byte {
+	return sq.shards[shardIndex(domain)].LoadMeta(domain)
+}
+
+// DeleteMeta removes metadata for a domain.
+func (sq *ShardedQueue) DeleteMeta(domain string) {
+	sq.shards[shardIndex(domain)].DeleteMeta(domain)
+}
+
+// --- Multi-domain methods: group by shard, then delegate ---
+
+// EnqueueBatch adds multiple URLs in a single transaction per shard.
+// Items are collected via the callback, grouped by shard, then each
+// shard's EnqueueBatch is called with its subset.
+func (sq *ShardedQueue) EnqueueBatch(maxPerDomain int, maxTotal int64, fn func(enqueue func(domain, rawURL string, depth int) bool)) error {
+	type item struct {
+		domain string
+		rawURL string
+		depth  int
+	}
+	var perShard [NumShards][]item
+
+	fn(func(domain, rawURL string, depth int) bool {
+		if maxTotal > 0 && sq.TotalLen() >= maxTotal {
+			return false
+		}
+		idx := shardIndex(domain)
+		perShard[idx] = append(perShard[idx], item{domain, rawURL, depth})
+		return true
+	})
+
+	for i := range NumShards {
+		if len(perShard[i]) == 0 {
+			continue
+		}
+		items := perShard[i]
+		if err := sq.shards[i].EnqueueBatch(maxPerDomain, 0, func(enqueue func(string, string, int) bool) {
+			for _, it := range items {
+				enqueue(it.domain, it.rawURL, it.depth)
+			}
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SaveMetaBatch writes metadata for many domains in a single transaction per shard.
+func (sq *ShardedQueue) SaveMetaBatch(fn func(put func(domain string, data []byte))) error {
+	type entry struct {
+		domain string
+		data   []byte
+	}
+	var perShard [NumShards][]entry
+
+	fn(func(domain string, data []byte) {
+		idx := shardIndex(domain)
+		// Copy data since we buffer it.
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		perShard[idx] = append(perShard[idx], entry{domain, cp})
+	})
+
+	for i := range NumShards {
+		if len(perShard[i]) == 0 {
+			continue
+		}
+		items := perShard[i]
+		if err := sq.shards[i].SaveMetaBatch(func(put func(string, []byte)) {
+			for _, e := range items {
+				put(e.domain, e.data)
+			}
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- Cross-shard aggregation ---
+
+// TotalLen returns the total number of queued URLs across all shards.
+func (sq *ShardedQueue) TotalLen() int64 {
+	var total int64
+	for i := range NumShards {
+		total += sq.shards[i].TotalLen()
+	}
+	return total
+}
+
+// DomainCount returns the total number of domains with queued URLs.
+func (sq *ShardedQueue) DomainCount() int {
+	var total int
+	for i := range NumShards {
+		total += sq.shards[i].DomainCount()
+	}
+	return total
+}
+
+// ActiveDomains returns all domains that have queued URLs across all shards.
+func (sq *ShardedQueue) ActiveDomains() []string {
+	var out []string
+	for i := range NumShards {
+		out = append(out, sq.shards[i].ActiveDomains()...)
+	}
+	return out
+}
+
+// IterMeta calls fn for every stored domain metadata entry across all shards.
+func (sq *ShardedQueue) IterMeta(fn func(domain string, data []byte)) {
+	for i := range NumShards {
+		sq.shards[i].IterMeta(fn)
+	}
+}
+
+// --- Admin ---
+
+// Close closes all shards.
+func (sq *ShardedQueue) Close() error {
+	var firstErr error
+	for i := range NumShards {
+		if err := sq.shards[i].Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// Stats returns bbolt stats for each shard.
+func (sq *ShardedQueue) Stats() [NumShards]bolt.Stats {
+	var out [NumShards]bolt.Stats
+	for i := range NumShards {
+		out[i] = sq.shards[i].Stats()
+	}
+	return out
+}
+
+// DBPaths returns the file path of each shard's bbolt database.
+func (sq *ShardedQueue) DBPaths() [NumShards]string {
+	var out [NumShards]string
+	for i := range NumShards {
+		out[i] = sq.shards[i].DBPath()
+	}
+	return out
 }
 
