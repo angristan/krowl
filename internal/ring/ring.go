@@ -13,7 +13,6 @@ const DefaultVnodes = 128
 
 type Node struct {
 	ID        int
-	Addr      string // VPC IP:port for Redis LPUSH
 	RedisAddr string
 }
 
