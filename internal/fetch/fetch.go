@@ -171,15 +171,17 @@ func (p *Pool) fetchLoop(ctx context.Context, id int) {
 		result, fetchErr := p.fetchWithRetry(ctx, rawURL, d)
 		latency := time.Since(fetchStart)
 		if fetchErr != nil {
-			p.domains.RecordFetch(d, latency)
 			// 429 Too Many Requests: domain already backed off in fetch(),
 			// re-enqueue the URL so it gets retried after the backoff expires.
+			// Do NOT call RecordFetch here — it would reset the doubled
+			// crawl delay set by RecordRateLimit back to adaptive latency.
 			if errors.Is(fetchErr, errRateLimited) {
 				m.RateLimited.Inc()
 				p.domains.Enqueue(d, rawURL, item.Depth)
 				p.repushIfNeeded(d)
 				continue
 			}
+			p.domains.RecordFetch(d, latency)
 			// DNS NXDOMAIN: kill domain immediately, no point retrying
 			if classifyNetworkError(fetchErr) == "dns_nxdomain" {
 				p.domains.RecordDNSError(d)

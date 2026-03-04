@@ -388,6 +388,46 @@ func (m *Manager) EnqueueBatch(items []struct{ Domain, URL string }, depth int) 
 	}
 }
 
+// EnqueueBatchWithDepth is like EnqueueBatch but each item carries its own depth.
+// Used by the inbox consumer where URLs arrive with varying depths.
+func (m *Manager) EnqueueBatchWithDepth(items []struct{ Domain, URL string; Depth int }) {
+	if len(items) == 0 {
+		return
+	}
+	wasEmpty := make(map[string]bool)
+	for _, it := range items {
+		if _, seen := wasEmpty[it.Domain]; !seen {
+			wasEmpty[it.Domain] = !m.queue.HasURLs(it.Domain)
+		}
+	}
+
+	_ = m.queue.EnqueueBatch(MaxQueuePerDomain, m.maxFrontier, func(enqueue func(string, string, int) bool) {
+		for _, it := range items {
+			if len(it.URL) > MaxURLLength || it.Depth > MaxCrawlDepth {
+				continue
+			}
+			enqueue(it.Domain, it.URL, it.Depth)
+		}
+	})
+
+	m.mu.Lock()
+	fr := m.frontier
+	for _, it := range items {
+		if _, ok := m.domains[it.Domain]; !ok {
+			m.domains[it.Domain] = &State{CrawlDelay: DefaultCrawlDelay}
+		}
+	}
+	m.mu.Unlock()
+
+	if fr != nil {
+		for d, empty := range wasEmpty {
+			if empty && m.queue.HasURLs(d) {
+				fr.Push(d, m.NextFetchTime(d))
+			}
+		}
+	}
+}
+
 // Dequeue pops the next URL from a domain's frontier.
 // Returns the item and true, or a zero item and false if empty.
 func (m *Manager) Dequeue(domain string) (urlqueue.Item, bool) {

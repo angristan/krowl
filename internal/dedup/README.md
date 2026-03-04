@@ -1,44 +1,35 @@
 # dedup
 
-Two-tier URL deduplication: in-memory bloom filter (fast reject) followed by Pebble on SSD (exact, persistent).
+Bloom filter backed by Pebble for persistence. The bloom filter is authoritative during crawling (zero Pebble reads). Pebble is write-only — it persists URL hashes so the bloom can be rebuilt on restart via `WarmBloom()`.
 
 ```
   URL ──► IsNew(url)
               │
               ▼
     ┌──────────────────┐
-    │  Tier 0: Bloom   │  (RAM, ~120MB)
-    │  TestAndAdd(url)  │
+    │  Bloom filter     │  (RAM, ~120MB)
+    │  Test(key)        │
     └────────┬─────────┘
              │
-        probably seen?
         ┌────┴────┐
-        no        yes
+        no        yes (seen)
         │         │
         ▼         ▼
-    DEFINITELY  ┌──────────────────┐
-    NEW ────►   │  Tier 1: Pebble  │  (SSD, exact)
-    mark in     │  Has(url)?       │
-    both tiers  └────────┬─────────┘
-                    ┌────┴────┐
-                    no        yes
-                    │         │
-                    ▼         ▼
-                   NEW     DUPLICATE
-                (mark in    (skip)
-                 Pebble)
+    NEW: Add to  DUPLICATE
+    bloom + write (skip)
+    to Pebble
+    (NoSync)
 ```
 
-A URL goes through:
-1. **Bloom filter** — if negative, URL is definitely new (fast path)
-2. **Pebble lookup** — if bloom says "maybe seen", Pebble provides the definitive answer
+Pebble writes use `NoSync` — the WAL still records them but doesn't fsync per write. On crash, at most the last WAL segment (~64MB) is lost; those URLs simply get re-crawled once.
 
-This avoids hitting disk for the majority of URLs while keeping zero false negatives.
+On startup, `WarmBloom()` scans all Pebble keys back into the bloom filter.
 
 ## API
 
 - `New(pebblePath, expectedURLs)` — Open Pebble DB and create bloom filter
-- `IsNew(rawURL)` — Returns true if URL hasn't been seen; atomically marks it in both tiers
+- `WarmBloom()` — Rebuild bloom from Pebble (call before crawling)
+- `IsNew(rawURL)` — Returns true if URL hasn't been seen; marks it in bloom + Pebble
 - `MarkSeen(rawURL)` — Force-mark a URL (used by inbox consumer for cross-shard URLs)
 - `Metrics()` — Expose underlying Pebble metrics for Prometheus
 - `Close()` — Close Pebble database

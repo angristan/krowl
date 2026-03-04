@@ -5,9 +5,9 @@ package inbox
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -21,6 +21,7 @@ const (
 	inboxKey     = "inbox"
 	batchSize    = 500
 	pollInterval = 50 * time.Millisecond
+	numConsumers = 8 // parallel drain goroutines
 )
 
 // Sender forwards cross-shard URLs to the owning node's Redis inbox.
@@ -118,7 +119,27 @@ func NewConsumer(localRedis *redis.Client, d *dedup.Dedup, dm *domain.Manager) *
 }
 
 // Run starts the consumer loop. Blocks until context is cancelled.
+// Spawns numConsumers parallel goroutines, each popping batches from Redis.
 func (c *Consumer) Run(ctx context.Context) {
+	var wg sync.WaitGroup
+	for i := 0; i < numConsumers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.drain(ctx)
+		}()
+	}
+	wg.Wait()
+}
+
+func (c *Consumer) drain(ctx context.Context) {
+	type newURL struct {
+		Domain string
+		URL    string
+		depth  int
+	}
+	buf := make([]newURL, 0, batchSize)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -140,15 +161,30 @@ func (c *Consumer) Run(ctx context.Context) {
 			}
 		}
 
+		// Phase 1: bloom-filter all URLs (fast, in-memory).
+		// Collect only genuinely new ones.
+		buf = buf[:0]
 		for _, wire := range urls {
 			rawURL, depth := decodeWire(wire)
 			if c.dedup.IsNew(rawURL) {
-				d := domain.ExtractDomain(rawURL)
-				c.domains.Enqueue(d, rawURL, depth)
+				buf = append(buf, newURL{
+					Domain: domain.ExtractDomain(rawURL),
+					URL:    rawURL,
+					depth:  depth,
+				})
 			}
 		}
 
-		slog.Debug("inbox batch processed", "count", len(urls))
+		if len(buf) == 0 {
+			continue
+		}
+
+		// Phase 2: batch-enqueue new URLs (single bbolt txn).
+		items := make([]struct{ Domain, URL string; Depth int }, len(buf))
+		for i, u := range buf {
+			items[i] = struct{ Domain, URL string; Depth int }{u.Domain, u.URL, u.depth}
+		}
+		c.domains.EnqueueBatchWithDepth(items)
 	}
 }
 
