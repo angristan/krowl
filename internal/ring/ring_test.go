@@ -40,7 +40,6 @@ func makeNodes(n int) []Node {
 	for i := range nodes {
 		nodes[i] = Node{
 			ID:        i + 1,
-			Addr:      fmt.Sprintf("10.0.0.%d:6379", i+1),
 			RedisAddr: fmt.Sprintf("10.0.0.%d:6380", i+1),
 		}
 	}
@@ -214,7 +213,7 @@ func TestGetNode(t *testing.T) {
 		if !ok {
 			t.Fatalf("GetNode(%d) returned ok=false", n.ID)
 		}
-		if got.ID != n.ID || got.Addr != n.Addr || got.RedisAddr != n.RedisAddr {
+		if got.ID != n.ID || got.RedisAddr != n.RedisAddr {
 			t.Fatalf("GetNode(%d) = %+v, want %+v", n.ID, got, n)
 		}
 	}
@@ -355,8 +354,8 @@ func TestSetNodesReplacesFully(t *testing.T) {
 
 	// Replace with completely different nodes (IDs 10, 20)
 	r.SetNodes([]Node{
-		{ID: 10, Addr: "10.0.0.10:6379", RedisAddr: "10.0.0.10:6380"},
-		{ID: 20, Addr: "10.0.0.20:6379", RedisAddr: "10.0.0.20:6380"},
+		{ID: 10, RedisAddr: "10.0.0.10:6380"},
+		{ID: 20, RedisAddr: "10.0.0.20:6380"},
 	})
 
 	// Old nodes should be gone
