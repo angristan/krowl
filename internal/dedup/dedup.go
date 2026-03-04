@@ -38,7 +38,7 @@ func New(pebblePath string, expectedURLs int) (*Dedup, error) {
 		MemTableSize:                64 * 1024 * 1024, // 64MB memtable
 		MemTableStopWritesThreshold: 4,
 		MaxConcurrentCompactions:    func() int { return 4 },
-		DisableWAL:                  true, // acceptable for dedup: lose last few ms on crash
+		// WAL enabled (default) — fsync on writes for crash durability.
 	})
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ func (d *Dedup) IsNew(rawURL string) bool {
 	// New URL. Mark in both bloom + Pebble.
 	m.DedupNewURLs.Inc()
 	d.bloom.Add(key)
-	_ = d.pebble.Set(key, pebbleOne, pebble.NoSync)
+	_ = d.pebble.Set(key, pebbleOne, pebble.Sync)
 	return true
 }
 
@@ -95,7 +95,7 @@ func (d *Dedup) IsNew(rawURL string) bool {
 func (d *Dedup) MarkSeen(rawURL string) {
 	key := urlKey(rawURL)
 	d.bloom.Add(key)
-	_ = d.pebble.Set(key, pebbleOne, pebble.NoSync)
+	_ = d.pebble.Set(key, pebbleOne, pebble.Sync)
 }
 
 // Metrics returns the underlying Pebble metrics.

@@ -21,7 +21,6 @@ import (
 	"unsafe"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
-	"github.com/cockroachdb/pebble"
 	"github.com/grafana/pyroscope-go"
 	consul "github.com/hashicorp/consul/api"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -57,7 +56,7 @@ func main() {
 		metricsPort     = flag.Int("metrics-port", 9090, "Prometheus metrics port")
 		expectedURLs    = flag.Int("expected-urls", 50_000_000, "Expected total URLs for bloom filter sizing")
 		warcDir         = flag.String("warc-dir", "/mnt/jfs/warcs", "Directory for WARC output files")
-		urlqueuePath    = flag.String("urlqueue", "/mnt/jfs/data/urlqueue", "Path to Pebble-backed URL queue")
+		urlqueuePath    = flag.String("urlqueue", "/var/lib/krowl/urlqueue.db", "Path to bbolt URL queue file")
 		fetchWorkersF   = flag.Int("fetch-workers", 750, "Number of fetcher goroutines (I/O-bound, set high)")
 		parseWorkersF   = flag.Int("parse-workers", 0, "Minimum parser goroutines (0 = NumCPU)")
 		parseWorkersMax = flag.Int("parse-workers-max", 64, "Maximum parser goroutines (auto-scaled based on channel backpressure)")
@@ -172,7 +171,7 @@ func main() {
 	}
 	slog.Info("bloom filter warmed from Pebble", "urls", nWarmed, "duration", time.Since(warmStart))
 
-	// URL queue (Pebble-backed per-domain URL queues — replaces in-memory slices + checkpoint file)
+	// URL queue (bbolt-backed per-domain URL queues)
 	uq, err := urlqueue.Open(*urlqueuePath)
 	if err != nil {
 		slog.Error("failed to open URL queue", "error", err)
@@ -387,7 +386,7 @@ func main() {
 	slog.Info("krowl shutdown complete")
 }
 
-// periodicStateSave persists domain metadata to Pebble every 60 seconds.
+// periodicStateSave persists domain metadata to bbolt every 60 seconds.
 func periodicStateSave(ctx context.Context, dm *domain.Manager) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -524,6 +523,7 @@ func watchTopology(ctx context.Context, client *consul.Client, hashRing *ring.Ri
 }
 
 // loadSeeds reads the seed file and enqueues domains owned by this node.
+// Uses EnqueueBatch to write all seeds in a single bbolt transaction.
 func loadSeeds(path string, hashRing *ring.Ring, myID int, dm *domain.Manager) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -532,19 +532,22 @@ func loadSeeds(path string, hashRing *ring.Ring, myID int, dm *domain.Manager) {
 	}
 	defer func() { _ = f.Close() }()
 
+	type seedItem = struct{ Domain, URL string }
+	var batch []seedItem
+
 	scanner := bufio.NewScanner(f)
-	count := 0
 	for scanner.Scan() {
 		d := strings.TrimSpace(scanner.Text())
 		if d == "" || strings.HasPrefix(d, "#") {
 			continue
 		}
 		if hashRing.Owner(d) == myID {
-			dm.Enqueue(d, fmt.Sprintf("https://%s/", d), 0) // seeds are depth 0
-			count++
+			batch = append(batch, seedItem{Domain: d, URL: fmt.Sprintf("https://%s/", d)})
 		}
 	}
-	slog.Info("seeds loaded", "count", count, "node", myID)
+
+	dm.EnqueueBatch(batch, 0) // seeds are depth 0
+	slog.Info("seeds loaded", "count", len(batch), "node", myID)
 }
 
 // patchTransportTLS wraps gowarc's internal DialTLSContext so that TLS
@@ -650,28 +653,30 @@ func reportMetrics(ctx context.Context, dm *domain.Manager, fr *frontier.Frontie
 				m.RedisPoolStaleConns.Set(float64(ps.StaleConns))
 			}
 
-			// Pebble internals (dedup + urlqueue)
-			for _, pdb := range []struct {
-				label   string
-				metrics *pebble.Metrics
-			}{
-				{"dedup", dd.Metrics()},
-				{"urlqueue", dm.URLQueue().Metrics()},
-			} {
-				pm := pdb.metrics
-				m.PebbleDiskUsageBytes.WithLabelValues(pdb.label).Set(float64(pm.DiskSpaceUsage()))
-				m.PebbleMemtableSizeBytes.WithLabelValues(pdb.label).Set(float64(pm.MemTable.Size))
-				m.PebbleMemtableCount.WithLabelValues(pdb.label).Set(float64(pm.MemTable.Count))
-				m.PebbleCompactionDebtBytes.WithLabelValues(pdb.label).Set(float64(pm.Compact.EstimatedDebt))
-				m.PebbleL0Files.WithLabelValues(pdb.label).Set(float64(pm.Levels[0].NumFiles))
-				m.PebbleL0Sublevels.WithLabelValues(pdb.label).Set(float64(pm.Levels[0].Sublevels))
-				m.PebbleReadAmp.WithLabelValues(pdb.label).Set(float64(pm.ReadAmp()))
-				var totalKeys int64
-				for _, lm := range pm.Levels {
-					totalKeys += int64(lm.NumFiles)
-				}
-				m.PebbleTotalKeys.WithLabelValues(pdb.label).Set(float64(totalKeys))
+			// Pebble internals (dedup only)
+			pm := dd.Metrics()
+			m.PebbleDiskUsageBytes.WithLabelValues("dedup").Set(float64(pm.DiskSpaceUsage()))
+			m.PebbleMemtableSizeBytes.WithLabelValues("dedup").Set(float64(pm.MemTable.Size))
+			m.PebbleMemtableCount.WithLabelValues("dedup").Set(float64(pm.MemTable.Count))
+			m.PebbleCompactionDebtBytes.WithLabelValues("dedup").Set(float64(pm.Compact.EstimatedDebt))
+			m.PebbleL0Files.WithLabelValues("dedup").Set(float64(pm.Levels[0].NumFiles))
+			m.PebbleL0Sublevels.WithLabelValues("dedup").Set(float64(pm.Levels[0].Sublevels))
+			m.PebbleReadAmp.WithLabelValues("dedup").Set(float64(pm.ReadAmp()))
+			var totalKeys int64
+			for _, lm := range pm.Levels {
+				totalKeys += int64(lm.NumFiles)
 			}
+			m.PebbleTotalKeys.WithLabelValues("dedup").Set(float64(totalKeys))
+
+			// bbolt internals (URL queue)
+			if fi, err := os.Stat(dm.URLQueue().DBPath()); err == nil {
+				m.BboltDiskSizeBytes.Set(float64(fi.Size()))
+			}
+			bs := dm.URLQueue().Stats()
+			m.BboltFreePages.Set(float64(bs.FreePageN))
+			m.BboltPendingPages.Set(float64(bs.PendingPageN))
+			m.BboltFreeAllocBytes.Set(float64(bs.FreeAlloc))
+			m.BboltOpenReaders.Set(float64(bs.OpenTxN))
 		}
 	}
 }

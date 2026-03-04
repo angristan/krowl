@@ -4366,7 +4366,7 @@
     },
     {
       "type": "row",
-      "title": "Pebble",
+      "title": "Pebble (Dedup)",
       "collapsed": false,
       "id": 230,
       "gridPos": {
@@ -4654,6 +4654,204 @@
     },
     {
       "type": "row",
+      "title": "bbolt (URL Queue)",
+      "collapsed": false,
+      "id": 290,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 238
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "bbolt Disk Size",
+      "id": 291,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 239
+      },
+      "targets": [
+        {
+          "expr": "krowl_bbolt_disk_size_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "bbolt Free / Pending Pages",
+      "id": 292,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 239
+      },
+      "targets": [
+        {
+          "expr": "krowl_bbolt_free_pages{instance=~\"$instance\"}",
+          "legendFormat": "Free {{instance}}",
+          "refId": "A"
+        },
+        {
+          "expr": "krowl_bbolt_pending_pages{instance=~\"$instance\"}",
+          "legendFormat": "Pending {{instance}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "bbolt Free Alloc",
+      "id": 293,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 239
+      },
+      "targets": [
+        {
+          "expr": "krowl_bbolt_free_alloc_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "bbolt Open Readers",
+      "id": 294,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 239
+      },
+      "targets": [
+        {
+          "expr": "krowl_bbolt_open_readers{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "type": "row",
       "title": "Redis",
       "collapsed": false,
       "id": 240,
@@ -4661,7 +4859,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 238
+        "y": 247
       },
       "panels": []
     },

@@ -120,12 +120,6 @@ func TestPersistence(t *testing.T) {
 			t.Fatalf("IsNew(%q) returned false in first session", u)
 		}
 	}
-	// Flush memtable to disk. The production config uses DisableWAL
-	// and NoSync, so unflushed data lives only in the memtable and
-	// would be lost on Close without an explicit flush.
-	if err := d1.pebble.Flush(); err != nil {
-		t.Fatalf("Flush() error: %v", err)
-	}
 	if err := d1.Close(); err != nil {
 		t.Fatalf("first Close() error: %v", err)
 	}
