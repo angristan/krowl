@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ import (
 func newTestManager(t *testing.T, maxFrontier int) *Manager {
 	t.Helper()
 	dir := t.TempDir()
-	q, err := urlqueue.Open(dir)
+	q, err := urlqueue.Open(filepath.Join(dir, "queue.db"))
 	if err != nil {
 		t.Fatalf("failed to open urlqueue: %v", err)
 	}

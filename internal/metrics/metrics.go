@@ -279,8 +279,33 @@ var (
 	})
 )
 
-// ---- Pebble internals ----
-// All Pebble metrics use a "db" label to distinguish instances (dedup, urlqueue).
+// ---- bbolt internals (URL queue) ----
+
+var (
+	BboltDiskSizeBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "bbolt_disk_size_bytes",
+		Help: "bbolt database file size on disk",
+	})
+	BboltFreePages = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "bbolt_free_pages",
+		Help: "bbolt total free pages on the freelist",
+	})
+	BboltPendingPages = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "bbolt_pending_pages",
+		Help: "bbolt total pending pages on the freelist",
+	})
+	BboltFreeAllocBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "bbolt_free_alloc_bytes",
+		Help: "bbolt total bytes allocated in free pages",
+	})
+	BboltOpenReaders = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "bbolt_open_readers",
+		Help: "bbolt number of currently open read transactions",
+	})
+)
+
+// ---- Pebble internals (dedup) ----
+// Pebble metrics use a "db" label (only "dedup" is emitted now).
 
 var (
 	PebbleDiskUsageBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -414,7 +439,13 @@ func Register() {
 		InboxBatchSize, InboxQueueSize,
 	)
 
-	// Pebble
+	// bbolt (URL queue)
+	prometheus.MustRegister(
+		BboltDiskSizeBytes, BboltFreePages, BboltPendingPages,
+		BboltFreeAllocBytes, BboltOpenReaders,
+	)
+
+	// Pebble (dedup)
 	prometheus.MustRegister(
 		PebbleDiskUsageBytes, PebbleMemtableSizeBytes, PebbleMemtableCount,
 		PebbleCompactionDebtBytes, PebbleL0Files, PebbleL0Sublevels,

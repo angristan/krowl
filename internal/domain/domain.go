@@ -259,7 +259,7 @@ type Manager struct {
 	client   *http.Client
 	frontier *frontier.Frontier // if non-nil, domains are pushed here on enqueue
 	sitemap  *sitemap.Fetcher
-	queue    *urlqueue.Queue // Pebble-backed per-domain URL queues
+	queue    *urlqueue.Queue // bbolt-backed per-domain URL queues
 
 	userAgent   string
 	maxFrontier int64 // global cap; 0 = unlimited
@@ -345,6 +345,46 @@ func (m *Manager) Enqueue(domain, rawURL string, depth int) {
 	// heap already or a fetcher has it checked out and will re-push.
 	if wasEmpty && fr != nil {
 		fr.Push(domain, m.NextFetchTime(domain))
+	}
+}
+
+// EnqueueBatch adds multiple URLs in a single bbolt transaction. Used for
+// seed loading where per-URL transactions would be wasteful. Pushes newly
+// non-empty domains into the frontier after the batch commits.
+func (m *Manager) EnqueueBatch(items []struct{ Domain, URL string }, depth int) {
+	// Track which domains go from empty to non-empty.
+	wasEmpty := make(map[string]bool)
+	for _, it := range items {
+		if _, seen := wasEmpty[it.Domain]; !seen {
+			wasEmpty[it.Domain] = !m.queue.HasURLs(it.Domain)
+		}
+	}
+
+	_ = m.queue.EnqueueBatch(MaxQueuePerDomain, m.maxFrontier, func(enqueue func(string, string, int) bool) {
+		for _, it := range items {
+			if len(it.URL) > MaxURLLength {
+				continue
+			}
+			enqueue(it.Domain, it.URL, depth)
+		}
+	})
+
+	// Ensure domain state exists and push to frontier.
+	m.mu.Lock()
+	fr := m.frontier
+	for _, it := range items {
+		if _, ok := m.domains[it.Domain]; !ok {
+			m.domains[it.Domain] = &State{CrawlDelay: DefaultCrawlDelay}
+		}
+	}
+	m.mu.Unlock()
+
+	if fr != nil {
+		for d, empty := range wasEmpty {
+			if empty && m.queue.HasURLs(d) {
+				fr.Push(d, m.NextFetchTime(d))
+			}
+		}
 	}
 }
 
@@ -645,7 +685,7 @@ func (m *Manager) TotalQueueLen() int {
 	return int(m.queue.TotalLen())
 }
 
-// URLQueue returns the underlying Pebble-backed URL queue.
+// URLQueue returns the underlying bbolt-backed URL queue.
 func (m *Manager) URLQueue() *urlqueue.Queue {
 	return m.queue
 }
@@ -684,25 +724,23 @@ func (m *Manager) fetchRobots(domain string) (string, error) {
 }
 
 // SaveAllState persists metadata for all tracked domains to the URL queue's
-// Pebble store. Called periodically and on shutdown.
+// bbolt store. Called periodically and on shutdown. All domains are written
+// in a single bbolt transaction (one fsync).
 func (m *Manager) SaveAllState() int {
 	m.mu.RLock()
-	// Encode + write directly under read lock, reusing single buffers for
-	// both the 46-byte state encoding and the Pebble key. Pebble.Set copies
-	// key+value internally so the buffers are safe to reuse immediately.
-	// This avoids 2.6M+ allocations (1.3M × 2) that the old approach created.
 	valBuf := make([]byte, stateEncodingSize)
-	keyBuf := make([]byte, 0, 256) // reused for Pebble metaKey
 	count := len(m.domains)
-	for d, s := range m.domains {
-		encodeStateBuf(s, valBuf)
-		keyBuf = m.queue.SaveMetaBuf(d, valBuf, keyBuf)
-	}
+	_ = m.queue.SaveMetaBatch(func(put func(string, []byte)) {
+		for d, s := range m.domains {
+			encodeStateBuf(s, valBuf)
+			put(d, valBuf)
+		}
+	})
 	m.mu.RUnlock()
 	return count
 }
 
-// RestoreAllState loads persisted domain metadata from Pebble and
+// RestoreAllState loads persisted domain metadata from bbolt and
 // populates the in-memory domain map. Should be called at startup
 // before any fetchers begin.
 func (m *Manager) RestoreAllState() int {

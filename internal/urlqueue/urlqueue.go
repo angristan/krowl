@@ -1,27 +1,36 @@
-// Package urlqueue implements a Pebble-backed per-domain URL queue.
+// Package urlqueue implements a bbolt-backed per-domain URL queue.
 //
-// Key schema:
+// bbolt structure:
 //
-//	<domain>\x00<seq_be64>
+//	bucket "urls"
+//	├── sub-bucket "example.com"    (per-domain bucket)
+//	│   ├── <seq_be64> → <depth_varint><url_bytes>
+//	│   └── ...
+//	└── sub-bucket "other.org"
+//	    └── ...
+//	bucket "meta"
+//	├── "example.com" → 46-byte domain state
+//	└── ...
 //
-// Value schema:
-//
-//	<depth_varint><url_bytes>
-//
-// All URLs for a domain are stored contiguously in sorted order.
-// Enqueue appends with an incrementing sequence number (FIFO).
-// Dequeue seeks to the first key for a domain and deletes it.
+// Per-domain sub-buckets give O(1) first-key seek for Dequeue and
+// O(1) bucket delete for DropDomain (no tombstone churn).
 //
 // Lightweight in-memory maps track per-domain counts and sequence
-// numbers. These are rebuilt from a single Pebble scan on startup.
+// numbers. These are rebuilt from a single scan on startup.
 package urlqueue
 
 import (
 	"encoding/binary"
 	"sync"
 	"sync/atomic"
+	"time"
 
-	"github.com/cockroachdb/pebble"
+	bolt "go.etcd.io/bbolt"
+)
+
+var (
+	urlsBucket = []byte("urls")
+	metaBucket = []byte("meta")
 )
 
 // Item is a URL with its crawl depth.
@@ -30,9 +39,9 @@ type Item struct {
 	Depth int
 }
 
-// Queue is a Pebble-backed per-domain URL queue.
+// Queue is a bbolt-backed per-domain URL queue.
 type Queue struct {
-	db *pebble.DB
+	db *bolt.DB
 
 	mu     sync.Mutex
 	counts map[string]int    // domain -> queue length
@@ -41,21 +50,33 @@ type Queue struct {
 	total atomic.Int64 // global count of queued URLs
 }
 
-// Open creates or opens a Pebble-backed URL queue at the given path.
+// Open creates or opens a bbolt-backed URL queue at the given file path.
 // If the database already contains data, in-memory counters are rebuilt
 // from a full scan.
 func Open(path string) (*Queue, error) {
-	cache := pebble.NewCache(256 * 1024 * 1024) // 256MB block cache
-	defer cache.Unref()
+	db, err := bolt.Open(path, 0600, &bolt.Options{
+		FreelistType: bolt.FreelistMapType,
+	})
+	if err == nil {
+		// Reduce batch delay from default 10ms to 1ms. Still amortizes
+		// concurrent callers during crawling, but doesn't waste time
+		// when a single goroutine is the only caller.
+		db.MaxBatchDelay = 1 * time.Millisecond
+	}
+	if err != nil {
+		return nil, err
+	}
 
-	db, err := pebble.Open(path, &pebble.Options{
-		Cache:                       cache,
-		MemTableSize:                64 << 20, // 64MB
-		MemTableStopWritesThreshold: 4,
-		MaxConcurrentCompactions:    func() int { return 2 },
-		DisableWAL:                  true,
+	// Create top-level buckets if they don't exist.
+	err = db.Update(func(tx *bolt.Tx) error {
+		if _, err := tx.CreateBucketIfNotExists(urlsBucket); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(metaBucket)
+		return err
 	})
 	if err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 
@@ -73,29 +94,37 @@ func Open(path string) (*Queue, error) {
 	return q, nil
 }
 
-// rebuild scans all keys to restore in-memory counters and sequence numbers.
+// rebuild scans all sub-buckets to restore in-memory counters and sequence numbers.
 func (q *Queue) rebuild() error {
-	iter, err := q.db.NewIter(nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = iter.Close() }()
+	return q.db.View(func(tx *bolt.Tx) error {
+		urls := tx.Bucket(urlsBucket)
+		return urls.ForEachBucket(func(domainKey []byte) error {
+			domain := string(domainKey)
+			sub := urls.Bucket(domainKey)
 
-	for iter.First(); iter.Valid(); iter.Next() {
-		domain, seq := decodeKey(iter.Key())
-		q.counts[domain]++
-		if seq+1 > q.seqs[domain] {
-			q.seqs[domain] = seq + 1
-		}
-	}
+			var count int
+			var maxSeq uint64
 
-	var total int64
-	for _, c := range q.counts {
-		total += int64(c)
-	}
-	q.total.Store(total)
+			err := sub.ForEach(func(k, _ []byte) error {
+				count++
+				seq := binary.BigEndian.Uint64(k)
+				if seq+1 > maxSeq {
+					maxSeq = seq + 1
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
 
-	return iter.Error()
+			if count > 0 {
+				q.counts[domain] = count
+				q.seqs[domain] = maxSeq
+				q.total.Add(int64(count))
+			}
+			return nil
+		})
+	})
 }
 
 // Enqueue adds a URL to a domain's queue. Returns false if the
@@ -117,49 +146,136 @@ func (q *Queue) Enqueue(domain, rawURL string, depth, maxPerDomain int, maxTotal
 	q.total.Add(1)
 	q.mu.Unlock()
 
-	key := encodeKey(domain, seq)
+	key := encodeSeq(seq)
 	val := encodeValue(depth, rawURL)
-	_ = q.db.Set(key, val, pebble.NoSync)
+	domainBytes := []byte(domain)
+
+	err := q.db.Batch(func(tx *bolt.Tx) error {
+		sub, err := tx.Bucket(urlsBucket).CreateBucketIfNotExists(domainBytes)
+		if err != nil {
+			return err
+		}
+		return sub.Put(key, val)
+	})
+	if err != nil {
+		// Rollback in-memory counters on write failure.
+		q.mu.Lock()
+		q.counts[domain]--
+		if q.counts[domain] <= 0 {
+			delete(q.counts, domain)
+		}
+		q.total.Add(-1)
+		q.mu.Unlock()
+		return false
+	}
 	return true
+}
+
+// EnqueueBatch adds multiple URLs in a single bbolt transaction (one fsync).
+// The caller provides a function that receives an enqueue callback. The callback
+// returns false if the per-domain or global cap is exceeded. Used for seed loading
+// where single-threaded Batch() would waste 10ms per call waiting for concurrency.
+func (q *Queue) EnqueueBatch(maxPerDomain int, maxTotal int64, fn func(enqueue func(domain, rawURL string, depth int) bool)) error {
+	// Collect items under lock, then write all at once.
+	type item struct {
+		domain string
+		seq    uint64
+		key    []byte
+		val    []byte
+	}
+	var items []item
+
+	q.mu.Lock()
+	fn(func(domain, rawURL string, depth int) bool {
+		if maxPerDomain > 0 && q.counts[domain] >= maxPerDomain {
+			return false
+		}
+		if maxTotal > 0 && q.total.Load() >= maxTotal {
+			return false
+		}
+		seq := q.seqs[domain]
+		q.seqs[domain] = seq + 1
+		q.counts[domain]++
+		q.total.Add(1)
+		items = append(items, item{
+			domain: domain,
+			seq:    seq,
+			key:    encodeSeq(seq),
+			val:    encodeValue(depth, rawURL),
+		})
+		return true
+	})
+	q.mu.Unlock()
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	err := q.db.Update(func(tx *bolt.Tx) error {
+		urls := tx.Bucket(urlsBucket)
+		for i := range items {
+			sub, err := urls.CreateBucketIfNotExists([]byte(items[i].domain))
+			if err != nil {
+				return err
+			}
+			if err := sub.Put(items[i].key, items[i].val); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		// Rollback in-memory counters.
+		q.mu.Lock()
+		for _, it := range items {
+			q.counts[it.domain]--
+			if q.counts[it.domain] <= 0 {
+				delete(q.counts, it.domain)
+			}
+			q.total.Add(-1)
+		}
+		q.mu.Unlock()
+	}
+	return err
 }
 
 // Dequeue pops the next URL from a domain's queue.
 // Returns the item and true, or a zero item and false if empty.
 func (q *Queue) Dequeue(domain string) (Item, bool) {
-	prefix := []byte(domain + "\x00")
+	var item Item
+	var found bool
+	domainBytes := []byte(domain)
 
-	iter, err := q.db.NewIter(&pebble.IterOptions{
-		LowerBound: prefix,
-		UpperBound: prefixUpperBound(prefix),
+	err := q.db.Batch(func(tx *bolt.Tx) error {
+		sub := tx.Bucket(urlsBucket).Bucket(domainBytes)
+		if sub == nil {
+			return nil
+		}
+		c := sub.Cursor()
+		k, v := c.First()
+		if k == nil {
+			return nil
+		}
+		depth, url := decodeValue(v)
+		item = Item{URL: url, Depth: depth}
+		found = true
+		return c.Delete()
 	})
 	if err != nil {
 		return Item{}, false
 	}
-	defer func() { _ = iter.Close() }()
 
-	if !iter.First() {
-		return Item{}, false
+	if found {
+		q.mu.Lock()
+		q.counts[domain]--
+		if q.counts[domain] <= 0 {
+			delete(q.counts, domain)
+		}
+		q.total.Add(-1)
+		q.mu.Unlock()
 	}
 
-	// Copy key before deleting (iterator keys are only valid until next call)
-	key := make([]byte, len(iter.Key()))
-	copy(key, iter.Key())
-
-	depth, url := decodeValue(iter.Value())
-	item := Item{URL: url, Depth: depth}
-
-	_ = q.db.Delete(key, pebble.NoSync)
-
-	q.mu.Lock()
-	q.counts[domain]--
-	if q.counts[domain] <= 0 {
-		delete(q.counts, domain)
-		// Keep seqs[domain] so future enqueues don't reuse sequence numbers
-	}
-	q.total.Add(-1)
-	q.mu.Unlock()
-
-	return item, true
+	return item, found
 }
 
 // QueueLen returns the number of URLs queued for a domain.
@@ -201,70 +317,47 @@ func (q *Queue) DomainCount() int {
 
 // DropDomain removes all queued URLs for a domain.
 func (q *Queue) DropDomain(domain string) {
-	prefix := []byte(domain + "\x00")
-
-	iter, err := q.db.NewIter(&pebble.IterOptions{
-		LowerBound: prefix,
-		UpperBound: prefixUpperBound(prefix),
+	domainBytes := []byte(domain)
+	err := q.db.Update(func(tx *bolt.Tx) error {
+		urls := tx.Bucket(urlsBucket)
+		if urls.Bucket(domainBytes) == nil {
+			return nil
+		}
+		return urls.DeleteBucket(domainBytes)
 	})
 	if err != nil {
 		return
 	}
-
-	batch := q.db.NewBatch()
-	var count int
-	for iter.First(); iter.Valid(); iter.Next() {
-		_ = batch.Delete(iter.Key(), nil)
-		count++
-	}
-	_ = iter.Close()
-
-	if count > 0 {
-		_ = batch.Commit(pebble.NoSync)
-		q.mu.Lock()
-		q.total.Add(-int64(q.counts[domain]))
-		delete(q.counts, domain)
-		q.mu.Unlock()
-	} else {
-		_ = batch.Close()
-	}
+	q.mu.Lock()
+	q.total.Add(-int64(q.counts[domain]))
+	delete(q.counts, domain)
+	q.mu.Unlock()
 }
 
-// Metrics returns the underlying Pebble metrics.
-func (q *Queue) Metrics() *pebble.Metrics {
-	return q.db.Metrics()
+// Stats returns the underlying bbolt database stats.
+func (q *Queue) Stats() bolt.Stats {
+	return q.db.Stats()
 }
 
-// Close closes the underlying Pebble database.
+// DBPath returns the file path of the underlying bbolt database.
+func (q *Queue) DBPath() string {
+	return q.db.Path()
+}
+
+// Close closes the underlying bbolt database.
 func (q *Queue) Close() error {
 	return q.db.Close()
 }
 
 // --- encoding helpers ---
 
-func encodeKey(domain string, seq uint64) []byte {
-	// domain + \x00 + 8-byte big-endian sequence
-	key := make([]byte, len(domain)+1+8)
-	copy(key, domain)
-	key[len(domain)] = 0x00
-	binary.BigEndian.PutUint64(key[len(domain)+1:], seq)
+func encodeSeq(seq uint64) []byte {
+	key := make([]byte, 8)
+	binary.BigEndian.PutUint64(key, seq)
 	return key
 }
 
-func decodeKey(key []byte) (domain string, seq uint64) {
-	// Find the \x00 separator
-	for i := len(key) - 9; i >= 0; i-- {
-		if key[i] == 0x00 {
-			domain = string(key[:i])
-			seq = binary.BigEndian.Uint64(key[i+1:])
-			return
-		}
-	}
-	return string(key), 0
-}
-
 func encodeValue(depth int, url string) []byte {
-	// varint(depth) + url bytes
 	buf := make([]byte, binary.MaxVarintLen64+len(url))
 	n := binary.PutVarint(buf, int64(depth))
 	copy(buf[n:], url)
@@ -278,92 +371,67 @@ func decodeValue(val []byte) (depth int, url string) {
 
 // --- Domain metadata storage ---
 //
-// Domain state is stored with key prefix \x01 to separate from URL queue
-// keys (which start with printable domain chars >= 0x20).
-//
-// Key:   \x01<domain>
-// Value: caller-defined opaque bytes (typically gob-encoded struct)
-
-const metaPrefix = 0x01
-
-func metaKey(domain string) []byte {
-	key := make([]byte, 1+len(domain))
-	key[0] = metaPrefix
-	copy(key[1:], domain)
-	return key
-}
+// Domain state is stored in a separate "meta" bucket.
+// Key:   <domain>
+// Value: caller-defined opaque bytes (typically binary-encoded struct)
 
 // SaveMeta stores opaque metadata for a domain.
 func (q *Queue) SaveMeta(domain string, data []byte) {
-	_ = q.db.Set(metaKey(domain), data, pebble.NoSync)
+	_ = q.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(metaBucket).Put([]byte(domain), data)
+	})
 }
 
-// SaveMetaBuf is like SaveMeta but reuses a caller-provided key buffer
-// to avoid allocating a new []byte per call. The buffer is grown if needed
-// and the (possibly grown) buffer is returned.
-func (q *Queue) SaveMetaBuf(domain string, data []byte, keyBuf []byte) []byte {
-	needed := 1 + len(domain)
-	if cap(keyBuf) < needed {
-		keyBuf = make([]byte, needed)
-	} else {
-		keyBuf = keyBuf[:needed]
-	}
-	keyBuf[0] = metaPrefix
-	copy(keyBuf[1:], domain)
-	_ = q.db.Set(keyBuf, data, pebble.NoSync)
-	return keyBuf
+// SaveMetaBatch writes metadata for many domains in a single transaction.
+// The caller provides a function that receives a put callback.
+func (q *Queue) SaveMetaBatch(fn func(put func(domain string, data []byte))) error {
+	return q.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(metaBucket)
+		var firstErr error
+		fn(func(domain string, data []byte) {
+			if firstErr != nil {
+				return
+			}
+			if err := b.Put([]byte(domain), data); err != nil {
+				firstErr = err
+			}
+		})
+		return firstErr
+	})
 }
 
 // LoadMeta retrieves metadata for a domain. Returns nil if not found.
 func (q *Queue) LoadMeta(domain string) []byte {
-	val, closer, err := q.db.Get(metaKey(domain))
-	if err != nil {
+	var out []byte
+	_ = q.db.View(func(tx *bolt.Tx) error {
+		val := tx.Bucket(metaBucket).Get([]byte(domain))
+		if val != nil {
+			out = make([]byte, len(val))
+			copy(out, val)
+		}
 		return nil
-	}
-	// Copy before closing (val is only valid until closer.Close)
-	out := make([]byte, len(val))
-	copy(out, val)
-	_ = closer.Close()
+	})
 	return out
 }
 
 // IterMeta calls fn for every stored domain metadata entry.
 // Used at startup to restore domain state.
 func (q *Queue) IterMeta(fn func(domain string, data []byte)) {
-	prefix := []byte{metaPrefix}
-	iter, err := q.db.NewIter(&pebble.IterOptions{
-		LowerBound: prefix,
-		UpperBound: []byte{metaPrefix + 1},
+	_ = q.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(metaBucket).ForEach(func(k, v []byte) error {
+			// Copy value since bbolt tx buffers are only valid within tx.
+			val := make([]byte, len(v))
+			copy(val, v)
+			fn(string(k), val)
+			return nil
+		})
 	})
-	if err != nil {
-		return
-	}
-	defer func() { _ = iter.Close() }()
-
-	for iter.First(); iter.Valid(); iter.Next() {
-		domain := string(iter.Key()[1:]) // strip \x01 prefix
-		// Copy value since iterator reuses buffers
-		val := make([]byte, len(iter.Value()))
-		copy(val, iter.Value())
-		fn(domain, val)
-	}
 }
 
 // DeleteMeta removes metadata for a domain.
 func (q *Queue) DeleteMeta(domain string) {
-	_ = q.db.Delete(metaKey(domain), pebble.NoSync)
+	_ = q.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(metaBucket).Delete([]byte(domain))
+	})
 }
 
-// prefixUpperBound returns the immediate successor prefix for
-// Pebble range-limited iteration. E.g., "foo\x00" → "foo\x01".
-func prefixUpperBound(prefix []byte) []byte {
-	upper := make([]byte, len(prefix))
-	copy(upper, prefix)
-	for i := len(upper) - 1; i >= 0; i-- {
-		upper[i]++
-		if upper[i] != 0 {
-			return upper
-		}
-	}
-	return nil // prefix was all 0xFF — no upper bound
-}

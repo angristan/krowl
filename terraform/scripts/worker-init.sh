@@ -318,24 +318,24 @@ consul reload || true
 cat >/usr/local/bin/urlqueue-restore.sh <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
-LOCAL="/var/lib/krowl/urlqueue"
-REMOTE="/mnt/jfs/data/worker-$1/urlqueue"
-mkdir -p "$LOCAL"
+LOCAL="/var/lib/krowl/urlqueue.db"
+REMOTE="/mnt/jfs/data/worker-$1/urlqueue.db"
+mkdir -p "$(dirname "$LOCAL")"
 
-if [ ! -d "$REMOTE" ]; then
+if [ ! -f "$REMOTE" ]; then
     echo "urlqueue: no JuiceFS backup, starting fresh"
     exit 0
 fi
 
-# Compare mtime of CURRENT file (Pebble updates this on every open/compaction)
+# Compare mtime of the bbolt file
 LOCAL_MT=0
 REMOTE_MT=0
-[ -f "$LOCAL/CURRENT" ] && LOCAL_MT=$(stat -c %Y "$LOCAL/CURRENT")
-[ -f "$REMOTE/CURRENT" ] && REMOTE_MT=$(stat -c %Y "$REMOTE/CURRENT")
+[ -f "$LOCAL" ] && LOCAL_MT=$(stat -c %Y "$LOCAL")
+[ -f "$REMOTE" ] && REMOTE_MT=$(stat -c %Y "$REMOTE")
 
 if [ "$REMOTE_MT" -gt "$LOCAL_MT" ]; then
     echo "urlqueue: JuiceFS is newer (remote=$REMOTE_MT local=$LOCAL_MT), restoring"
-    rsync -a --delete "$REMOTE/" "$LOCAL/"
+    cp "$REMOTE" "$LOCAL"
 else
     echo "urlqueue: local is newer or equal (remote=$REMOTE_MT local=$LOCAL_MT), keeping local"
 fi
@@ -344,16 +344,16 @@ SCRIPT
 cat >/usr/local/bin/urlqueue-backup.sh <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
-LOCAL="/var/lib/krowl/urlqueue"
-REMOTE="/mnt/jfs/data/worker-$1/urlqueue"
+LOCAL="/var/lib/krowl/urlqueue.db"
+REMOTE="/mnt/jfs/data/worker-$1/urlqueue.db"
 
-if [ ! -d "$LOCAL" ] || [ ! -f "$LOCAL/CURRENT" ]; then
+if [ ! -f "$LOCAL" ]; then
     echo "urlqueue: nothing to back up"
     exit 0
 fi
 
-mkdir -p "$REMOTE"
-rsync -a --delete "$LOCAL/" "$REMOTE/"
+mkdir -p "$(dirname "$REMOTE")"
+cp "$LOCAL" "$REMOTE"
 echo "urlqueue: backed up to JuiceFS"
 SCRIPT
 
@@ -377,10 +377,11 @@ ExecStart=/usr/local/bin/crawler \
   --consul=localhost:8500 \
   --metrics-port=9090 \
   --warc-dir=/mnt/jfs/warcs \
-  --urlqueue=/var/lib/krowl/urlqueue \
+  --urlqueue=/var/lib/krowl/urlqueue.db \
   --mem-limit-pct=80 \
   --fetch-workers=2000 \
   --parse-chan-size=500 \
+  --parse-workers-max=256 \
   --pyroscope=http://${master_private_ip}:4040
 ExecStopPost=/usr/local/bin/urlqueue-backup.sh ${node_id}
 Restart=on-failure
